@@ -70,6 +70,8 @@ export default function Home() {
   const [strategy, setStrategy] = useState("MA20 / MA60 黃金交叉");
   const [capital, setCapital] = useState("1000000");
   const [positionSize, setPositionSize] = useState("20%");
+  const [stopLoss, setStopLoss] = useState("8%");
+  const [takeProfit, setTakeProfit] = useState("15%");
   const [isLoading, setIsLoading] = useState(false);
 
   const [result, setResult] = useState<BacktestResult>({
@@ -120,6 +122,9 @@ export default function Home() {
 
     setIsLoading(true);
 
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 20000);
+
     try {
       const response = await fetch("/api/backtest", {
         method: "POST",
@@ -131,7 +136,10 @@ export default function Home() {
           strategy,
           capital,
           positionSize,
+          stopLoss,
+          takeProfit,
         }),
+        signal: controller.signal,
       });
 
       const data = await response.json();
@@ -144,10 +152,11 @@ export default function Home() {
       setResult(data.result);
       setEquityCurve(data.equityCurve);
       setTradeRecords(data.tradeRecords);
-      setRecentResults([data.result, ...recentResults]);
+      setRecentResults((previousResults) => [data.result, ...previousResults]);
     } catch {
-      alert("無法連線到回測 API");
+      alert("回測逾時或無法連線到後端，請確認 FastAPI port 8000 有啟動");
     } finally {
+      clearTimeout(timeoutId);
       setIsLoading(false);
     }
   }
@@ -165,8 +174,8 @@ export default function Home() {
           </h1>
 
           <p className="mt-4 max-w-2xl text-slate-600">
-            輸入股票代號、選擇交易策略，系統會透過 API 回傳回測結果，
-            包含年化報酬、最大回撤、勝率、交易紀錄與資金曲線。
+            輸入股票代號、選擇交易策略，系統會透過 Python API
+            回傳回測結果，包含年化報酬、最大回撤、勝率、交易紀錄與資金曲線。
           </p>
 
           <div className="mt-6 flex flex-wrap gap-3">
@@ -201,10 +210,15 @@ export default function Home() {
             strategy={strategy}
             capital={capital}
             positionSize={positionSize}
+            stopLoss={stopLoss}
+            takeProfit={takeProfit}
+            isLoading={isLoading}
             setSymbol={setSymbol}
             setStrategy={setStrategy}
             setCapital={setCapital}
             setPositionSize={setPositionSize}
+            setStopLoss={setStopLoss}
+            setTakeProfit={setTakeProfit}
             runBacktest={runBacktest}
           />
 
@@ -228,17 +242,17 @@ export default function Home() {
 
             <div className="rounded-2xl bg-green-50 p-4">
               <p className="font-medium text-green-700">第 2 階段</p>
-              <p className="mt-1 text-sm text-green-700">假資料回測互動</p>
+              <p className="mt-1 text-sm text-green-700">假資料互動</p>
             </div>
 
             <div className="rounded-2xl bg-green-50 p-4">
               <p className="font-medium text-green-700">第 3 階段</p>
-              <p className="mt-1 text-sm text-green-700">資金曲線圖</p>
+              <p className="mt-1 text-sm text-green-700">真實資料回測</p>
             </div>
 
             <div className="rounded-2xl bg-blue-50 p-4">
               <p className="font-medium text-blue-700">第 4 階段</p>
-              <p className="mt-1 text-sm text-blue-700">API 回測完成</p>
+              <p className="mt-1 text-sm text-blue-700">停損停利參數</p>
             </div>
           </div>
         </section>

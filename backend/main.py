@@ -8,7 +8,6 @@ app = FastAPI()
 
 FEE_RATE = 0.001425
 TAX_RATE = 0.003
-STOP_LOSS_RATE = 0.08
 
 
 class BacktestRequest(BaseModel):
@@ -16,6 +15,8 @@ class BacktestRequest(BaseModel):
     strategy: str
     capital: str
     positionSize: str
+    stopLoss: str = "8%"
+    takeProfit: str = "15%"
 
 
 def clean_capital(capital: str) -> float:
@@ -37,6 +38,25 @@ def parse_position_size(position_size: str) -> float:
         number = number / 100
 
     return min(max(number, 0.01), 1)
+
+
+def parse_percent(value: str, default_value: float) -> float:
+    """
+    8% -> 0.08
+    15% -> 0.15
+    0.08 -> 0.08
+    """
+    clean_value = str(value).replace("%", "").strip()
+
+    try:
+        number = float(clean_value)
+    except ValueError:
+        return default_value
+
+    if number > 1:
+        number = number / 100
+
+    return min(max(number, 0), 1)
 
 
 def normalize_ticker_candidates(symbol: str):
@@ -118,8 +138,8 @@ def moving_average(values, window: int):
 
 def previous_high(values, window: int):
     """
-    回傳「前 window 天最高收盤價」。
-    注意：不包含今天，避免偷看未來。
+    回傳前 window 天最高收盤價。
+    不包含今天，避免偷看未來。
     """
     result = []
 
@@ -178,6 +198,8 @@ def get_signals(
     high60,
     shares: int,
     entry_price,
+    stop_loss_rate: float,
+    take_profit_rate: float,
 ):
     close = closes[i]
     previous_close = closes[i - 1]
@@ -196,7 +218,15 @@ def get_signals(
     stop_loss_signal = (
         shares > 0
         and entry_price is not None
-        and close <= entry_price * (1 - STOP_LOSS_RATE)
+        and stop_loss_rate > 0
+        and close <= entry_price * (1 - stop_loss_rate)
+    )
+
+    take_profit_signal = (
+        shares > 0
+        and entry_price is not None
+        and take_profit_rate > 0
+        and close >= entry_price * (1 + take_profit_rate)
     )
 
     # 策略 A：MA20 / MA60 黃金交叉
@@ -270,7 +300,7 @@ def get_signals(
         )
 
     else:
-        # 如果前端傳來未知策略，預設使用 MA20 / MA60。
+        # 未知策略預設使用 MA20 / MA60。
         buy_signal = (
             shares == 0
             and previous_ma20 is not None
@@ -291,7 +321,7 @@ def get_signals(
             and current_ma20 < current_ma60
         )
 
-    if stop_loss_signal:
+    if stop_loss_signal or take_profit_signal:
         sell_signal = True
 
     return buy_signal, sell_signal
@@ -302,6 +332,8 @@ def run_strategy_backtest(
     strategy_name: str,
     initial_capital: float,
     position_fraction: float,
+    stop_loss_rate: float,
+    take_profit_rate: float,
 ):
     price_data = fetch_real_price_series(symbol)
 
@@ -337,12 +369,14 @@ def run_strategy_backtest(
             high60=high60,
             shares=shares,
             entry_price=entry_price,
+            stop_loss_rate=stop_loss_rate,
+            take_profit_rate=take_profit_rate,
         )
 
         if buy_signal:
             position_budget = cash * position_fraction
 
-            # 台股一張是 1000 股，但為了小資金測試，這裡先用 100 股為最小單位。
+            # 台股一張是 1000 股，這裡先用 100 股為最小單位，方便小資金測試。
             buy_shares = int(position_budget // (close * 100)) * 100
             total_cost = buy_shares * close * (1 + FEE_RATE)
 
@@ -393,7 +427,7 @@ def run_strategy_backtest(
             }
         )
 
-    # 最後一天如果還有持股，強制用最後收盤價出場
+    # 最後一天如果還有持股，強制用最後收盤價出場。
     if shares > 0:
         final_day = price_data[-1]
         final_close = final_day["close"]
@@ -463,6 +497,8 @@ def run_backtest(request: BacktestRequest):
     strategy = request.strategy.strip()
     capital = clean_capital(request.capital)
     position_fraction = parse_position_size(request.positionSize)
+    stop_loss_rate = parse_percent(request.stopLoss, 0.08)
+    take_profit_rate = parse_percent(request.takeProfit, 0.15)
 
     if not symbol:
         raise HTTPException(status_code=400, detail="請輸入股票代號，例如 2330")
@@ -478,4 +514,6 @@ def run_backtest(request: BacktestRequest):
         strategy_name=strategy,
         initial_capital=capital,
         position_fraction=position_fraction,
+        stop_loss_rate=stop_loss_rate,
+        take_profit_rate=take_profit_rate,
     )

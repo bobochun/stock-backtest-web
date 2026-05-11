@@ -3,10 +3,15 @@ type BacktestFormProps = {
   strategy: string;
   capital: string;
   positionSize: string;
+  stopLoss: string;
+  takeProfit: string;
+  isLoading: boolean;
   setSymbol: (value: string) => void;
   setStrategy: (value: string) => void;
   setCapital: (value: string) => void;
   setPositionSize: (value: string) => void;
+  setStopLoss: (value: string) => void;
+  setTakeProfit: (value: string) => void;
   runBacktest: () => void;
 };
 
@@ -15,10 +20,15 @@ export default function BacktestForm({
   strategy,
   capital,
   positionSize,
+  stopLoss,
+  takeProfit,
+  isLoading,
   setSymbol,
   setStrategy,
   setCapital,
   setPositionSize,
+  setStopLoss,
+  setTakeProfit,
   runBacktest,
 }: BacktestFormProps) {
   return (
@@ -72,11 +82,34 @@ export default function BacktestForm({
           </div>
         </div>
 
+        <div className="grid gap-4 md:grid-cols-2">
+          <div>
+            <label className="text-sm text-slate-600">停損 %</label>
+            <input
+              value={stopLoss}
+              onChange={(event) => setStopLoss(event.target.value)}
+              className="mt-2 w-full rounded-xl border border-slate-300 px-4 py-3"
+              placeholder="8%"
+            />
+          </div>
+
+          <div>
+            <label className="text-sm text-slate-600">停利 %</label>
+            <input
+              value={takeProfit}
+              onChange={(event) => setTakeProfit(event.target.value)}
+              className="mt-2 w-full rounded-xl border border-slate-300 px-4 py-3"
+              placeholder="15%"
+            />
+          </div>
+        </div>
+
         <button
           onClick={runBacktest}
-          className="w-full rounded-2xl bg-blue-600 px-6 py-3 font-medium text-white"
+          disabled={isLoading}
+          className="w-full rounded-2xl bg-blue-600 px-6 py-3 font-medium text-white disabled:cursor-not-allowed disabled:opacity-60"
         >
-          執行回測
+          {isLoading ? "回測中..." : "執行回測"}
         </button>
       </div>
     </div>
