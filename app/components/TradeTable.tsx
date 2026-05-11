@@ -14,7 +14,7 @@ export default function TradeTable({ tradeRecords }: TradeTableProps) {
         <div>
           <h2 className="text-xl font-bold text-slate-900">交易紀錄表</h2>
           <p className="mt-1 text-sm text-slate-500">
-            每次回測會產生模擬買賣紀錄，之後會改成真實策略計算結果。
+            每次回測會依照策略訊號產生買賣紀錄，包含進出場與損益。
           </p>
         </div>
 

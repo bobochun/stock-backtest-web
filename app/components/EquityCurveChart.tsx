@@ -24,7 +24,7 @@ export default function EquityCurveChart({
         <div>
           <h2 className="text-xl font-bold text-slate-900">策略資金曲線</h2>
           <p className="mt-1 text-sm text-slate-500">
-            比較策略績效與大盤基準走勢，目前使用模擬資料。
+            比較策略績效與大盤基準走勢，由後端回測 API 產生。
           </p>
         </div>
 
