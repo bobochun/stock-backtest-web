@@ -1,30 +1,20 @@
 "use client";
 
 import { useState } from "react";
+
+import BacktestForm from "./components/BacktestForm";
+import EquityCurveChart from "./components/EquityCurveChart";
+import MetricCard from "./components/MetricCard";
+import RecentResults from "./components/RecentResults";
+import ResultSummary from "./components/ResultSummary";
+import TradeTable from "./components/TradeTable";
+
+import type { BacktestResult, EquityPoint, TradeRecord } from "./types";
+
 import {
-  CartesianGrid,
-  Line,
-  LineChart,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from "recharts";
-
-type BacktestResult = {
-  symbol: string;
-  strategy: string;
-  annualReturn: number;
-  maxDrawdown: number;
-  winRate: number;
-  trades: number;
-};
-
-type EquityPoint = {
-  period: string;
-  strategy: number;
-  benchmark: number;
-};
+  generateEquityCurve,
+  generateTradeRecords,
+} from "./lib/fakeBacktest";
 
 const defaultCurve: EquityPoint[] = [
   { period: "第 1 月", strategy: 1000000, benchmark: 1000000 },
@@ -41,38 +31,44 @@ const defaultCurve: EquityPoint[] = [
   { period: "第 12 月", strategy: 1287000, benchmark: 1120000 },
 ];
 
-function formatMoney(value: number) {
-  return `NT$ ${Math.round(value).toLocaleString("zh-TW")}`;
-}
-
-function generateEquityCurve(initialCapital: number, annualReturn: number) {
-  const curve: EquityPoint[] = [];
-
-  let strategyEquity = initialCapital;
-  let benchmarkEquity = initialCapital;
-
-  const monthlyStrategyReturn = annualReturn / 100 / 12;
-  const monthlyBenchmarkReturn = 0.08 / 12;
-
-  for (let month = 1; month <= 12; month++) {
-    const strategyNoise = Math.random() * 0.08 - 0.03;
-    const benchmarkNoise = Math.random() * 0.04 - 0.015;
-
-    strategyEquity =
-      strategyEquity * (1 + monthlyStrategyReturn + strategyNoise);
-
-    benchmarkEquity =
-      benchmarkEquity * (1 + monthlyBenchmarkReturn + benchmarkNoise);
-
-    curve.push({
-      period: `第 ${month} 月`,
-      strategy: Math.round(strategyEquity),
-      benchmark: Math.round(benchmarkEquity),
-    });
-  }
-
-  return curve;
-}
+const defaultTrades: TradeRecord[] = [
+  {
+    id: 1,
+    symbol: "2330",
+    entryDate: "2025-01-10",
+    exitDate: "2025-02-14",
+    entryPrice: 620,
+    exitPrice: 665,
+    shares: 1000,
+    pnl: 45000,
+    pnlPct: 7.3,
+    result: "獲利",
+  },
+  {
+    id: 2,
+    symbol: "2330",
+    entryDate: "2025-03-05",
+    exitDate: "2025-03-28",
+    entryPrice: 680,
+    exitPrice: 654,
+    shares: 1000,
+    pnl: -26000,
+    pnlPct: -3.8,
+    result: "虧損",
+  },
+  {
+    id: 3,
+    symbol: "2330",
+    entryDate: "2025-05-08",
+    exitDate: "2025-06-20",
+    entryPrice: 640,
+    exitPrice: 712,
+    shares: 1000,
+    pnl: 72000,
+    pnlPct: 11.3,
+    result: "獲利",
+  },
+];
 
 export default function Home() {
   const [symbol, setSymbol] = useState("");
@@ -90,6 +86,8 @@ export default function Home() {
   });
 
   const [equityCurve, setEquityCurve] = useState<EquityPoint[]>(defaultCurve);
+  const [tradeRecords, setTradeRecords] =
+    useState<TradeRecord[]>(defaultTrades);
 
   const [recentResults, setRecentResults] = useState<BacktestResult[]>([
     {
@@ -146,9 +144,11 @@ export default function Home() {
     };
 
     const newCurve = generateEquityCurve(cleanCapital, fakeAnnualReturn);
+    const newTrades = generateTradeRecords(symbol.trim(), cleanCapital);
 
     setResult(newResult);
     setEquityCurve(newCurve);
+    setTradeRecords(newTrades);
     setRecentResults([newResult, ...recentResults]);
   }
 
@@ -184,227 +184,33 @@ export default function Home() {
         </section>
 
         <section className="grid gap-4 md:grid-cols-4">
-          <div className="rounded-2xl bg-white p-5 shadow-sm">
-            <p className="text-sm text-slate-500">年化報酬</p>
-            <p className="mt-2 text-2xl font-bold text-slate-900">
-              {result.annualReturn}%
-            </p>
-          </div>
-
-          <div className="rounded-2xl bg-white p-5 shadow-sm">
-            <p className="text-sm text-slate-500">最大回撤</p>
-            <p className="mt-2 text-2xl font-bold text-red-600">
-              {result.maxDrawdown}%
-            </p>
-          </div>
-
-          <div className="rounded-2xl bg-white p-5 shadow-sm">
-            <p className="text-sm text-slate-500">勝率</p>
-            <p className="mt-2 text-2xl font-bold text-slate-900">
-              {result.winRate}%
-            </p>
-          </div>
-
-          <div className="rounded-2xl bg-white p-5 shadow-sm">
-            <p className="text-sm text-slate-500">交易次數</p>
-            <p className="mt-2 text-2xl font-bold text-slate-900">
-              {result.trades}
-            </p>
-          </div>
+          <MetricCard label="年化報酬" value={`${result.annualReturn}%`} />
+          <MetricCard label="最大回撤" value={`${result.maxDrawdown}%`} danger />
+          <MetricCard label="勝率" value={`${result.winRate}%`} />
+          <MetricCard label="交易次數" value={result.trades} />
         </section>
 
         <section className="grid gap-6 md:grid-cols-2">
-          <div className="rounded-3xl bg-white p-6 shadow-sm">
-            <h2 className="text-xl font-bold text-slate-900">回測設定</h2>
+          <BacktestForm
+            symbol={symbol}
+            strategy={strategy}
+            capital={capital}
+            positionSize={positionSize}
+            setSymbol={setSymbol}
+            setStrategy={setStrategy}
+            setCapital={setCapital}
+            setPositionSize={setPositionSize}
+            runBacktest={runBacktest}
+          />
 
-            <div className="mt-5 space-y-4">
-              <div>
-                <label className="text-sm text-slate-600">股票代號</label>
-                <input
-                  value={symbol}
-                  onChange={(event) => setSymbol(event.target.value)}
-                  className="mt-2 w-full rounded-xl border border-slate-300 px-4 py-3"
-                  placeholder="例如：2330"
-                />
-              </div>
-
-              <div>
-                <label className="text-sm text-slate-600">策略</label>
-                <select
-                  value={strategy}
-                  onChange={(event) => setStrategy(event.target.value)}
-                  className="mt-2 w-full rounded-xl border border-slate-300 px-4 py-3"
-                >
-                  <option>MA20 / MA60 黃金交叉</option>
-                  <option>回測月線反彈</option>
-                  <option>突破 60 日新高</option>
-                  <option>投信連買 + 站上月線</option>
-                </select>
-              </div>
-
-              <div className="grid gap-4 md:grid-cols-2">
-                <div>
-                  <label className="text-sm text-slate-600">初始資金</label>
-                  <input
-                    value={capital}
-                    onChange={(event) => setCapital(event.target.value)}
-                    className="mt-2 w-full rounded-xl border border-slate-300 px-4 py-3"
-                    placeholder="1000000"
-                  />
-                </div>
-
-                <div>
-                  <label className="text-sm text-slate-600">
-                    單筆持倉上限
-                  </label>
-                  <input
-                    value={positionSize}
-                    onChange={(event) => setPositionSize(event.target.value)}
-                    className="mt-2 w-full rounded-xl border border-slate-300 px-4 py-3"
-                    placeholder="20%"
-                  />
-                </div>
-              </div>
-
-              <button
-                onClick={runBacktest}
-                className="w-full rounded-2xl bg-blue-600 px-6 py-3 font-medium text-white"
-              >
-                執行回測
-              </button>
-            </div>
-          </div>
-
-          <div className="rounded-3xl bg-white p-6 shadow-sm">
-            <h2 className="text-xl font-bold text-slate-900">本次回測結果</h2>
-
-            <div className="mt-5 rounded-2xl border border-slate-200 bg-slate-50 p-5">
-              <p className="text-sm text-slate-500">股票代號</p>
-              <p className="mt-1 text-2xl font-bold text-slate-900">
-                {result.symbol}
-              </p>
-
-              <p className="mt-4 text-sm text-slate-500">策略</p>
-              <p className="mt-1 font-medium text-slate-900">
-                {result.strategy}
-              </p>
-
-              <div className="mt-5 grid gap-3 md:grid-cols-2">
-                <div className="rounded-xl bg-white p-4">
-                  <p className="text-sm text-slate-500">年化報酬</p>
-                  <p className="mt-1 text-xl font-bold text-slate-900">
-                    {result.annualReturn}%
-                  </p>
-                </div>
-
-                <div className="rounded-xl bg-white p-4">
-                  <p className="text-sm text-slate-500">最大回撤</p>
-                  <p className="mt-1 text-xl font-bold text-red-600">
-                    {result.maxDrawdown}%
-                  </p>
-                </div>
-
-                <div className="rounded-xl bg-white p-4">
-                  <p className="text-sm text-slate-500">勝率</p>
-                  <p className="mt-1 text-xl font-bold text-slate-900">
-                    {result.winRate}%
-                  </p>
-                </div>
-
-                <div className="rounded-xl bg-white p-4">
-                  <p className="text-sm text-slate-500">交易次數</p>
-                  <p className="mt-1 text-xl font-bold text-slate-900">
-                    {result.trades}
-                  </p>
-                </div>
-              </div>
-            </div>
-          </div>
+          <ResultSummary result={result} />
         </section>
 
-        <section className="rounded-3xl bg-white p-6 shadow-sm">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <h2 className="text-xl font-bold text-slate-900">
-                策略資金曲線
-              </h2>
-              <p className="mt-1 text-sm text-slate-500">
-                比較策略績效與大盤基準走勢，目前使用模擬資料。
-              </p>
-            </div>
+        <EquityCurveChart equityCurve={equityCurve} />
 
-            <div className="rounded-2xl bg-slate-100 px-4 py-3 text-sm text-slate-700">
-              期末資金：
-              <span className="font-bold text-slate-900">
-                {formatMoney(equityCurve[equityCurve.length - 1].strategy)}
-              </span>
-            </div>
-          </div>
+        <TradeTable tradeRecords={tradeRecords} />
 
-          <div className="mt-6 h-80">
-            <ResponsiveContainer width="100%" height="100%">
-              <LineChart
-                data={equityCurve}
-                margin={{ top: 10, right: 20, left: 10, bottom: 10 }}
-              >
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="period" />
-                <YAxis tickFormatter={(value) => `${Math.round(value / 10000)}萬`} />
-                <Tooltip
-                  formatter={(value) => formatMoney(Number(value))}
-                  labelFormatter={(label) => `期間：${label}`}
-                />
-                <Line
-                  type="monotone"
-                  dataKey="strategy"
-                  name="策略資金"
-                  strokeWidth={3}
-                  dot={false}
-                />
-                <Line
-                  type="monotone"
-                  dataKey="benchmark"
-                  name="大盤基準"
-                  strokeWidth={2}
-                  dot={false}
-                />
-              </LineChart>
-            </ResponsiveContainer>
-          </div>
-        </section>
-
-        <section className="rounded-3xl bg-white p-6 shadow-sm">
-          <h2 className="text-xl font-bold text-slate-900">最近回測結果</h2>
-
-          <div className="mt-5 space-y-3">
-            {recentResults.map((item, index) => (
-              <div
-                key={`${item.symbol}-${index}`}
-                className="rounded-2xl border border-slate-200 p-4"
-              >
-                <div className="flex flex-wrap items-center justify-between gap-3">
-                  <div>
-                    <p className="font-medium text-slate-900">
-                      {item.symbol}
-                    </p>
-                    <p className="mt-1 text-sm text-slate-500">
-                      {item.strategy}
-                    </p>
-                  </div>
-
-                  <div className="text-right">
-                    <p className="font-bold text-slate-900">
-                      報酬 +{item.annualReturn}%
-                    </p>
-                    <p className="mt-1 text-sm text-slate-500">
-                      MDD {item.maxDrawdown}%｜勝率 {item.winRate}%
-                    </p>
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
-        </section>
+        <RecentResults recentResults={recentResults} />
 
         <section className="rounded-3xl bg-white p-6 shadow-sm">
           <h2 className="text-xl font-bold text-slate-900">網站開發進度</h2>
@@ -420,14 +226,14 @@ export default function Home() {
               <p className="mt-1 text-sm text-green-700">假資料回測互動</p>
             </div>
 
-            <div className="rounded-2xl bg-blue-50 p-4">
-              <p className="font-medium text-blue-700">第 3 階段</p>
-              <p className="mt-1 text-sm text-blue-700">資金曲線圖</p>
+            <div className="rounded-2xl bg-green-50 p-4">
+              <p className="font-medium text-green-700">第 3 階段</p>
+              <p className="mt-1 text-sm text-green-700">資金曲線圖</p>
             </div>
 
-            <div className="rounded-2xl bg-slate-50 p-4">
-              <p className="font-medium text-slate-900">第 4 階段</p>
-              <p className="mt-1 text-sm text-slate-500">Python 回測 API</p>
+            <div className="rounded-2xl bg-blue-50 p-4">
+              <p className="font-medium text-blue-700">第 4 階段</p>
+              <p className="mt-1 text-sm text-blue-700">元件拆分完成</p>
             </div>
           </div>
         </section>
