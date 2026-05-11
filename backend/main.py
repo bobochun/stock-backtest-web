@@ -1,8 +1,5 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from datetime import date, timedelta
-import math
-import random
 
 import pandas as pd
 import yfinance as yf
@@ -11,6 +8,7 @@ app = FastAPI()
 
 FEE_RATE = 0.001425
 TAX_RATE = 0.003
+STOP_LOSS_RATE = 0.08
 
 
 class BacktestRequest(BaseModel):
@@ -42,10 +40,6 @@ def parse_position_size(position_size: str) -> float:
 
 
 def normalize_ticker_candidates(symbol: str):
-    """
-    使用者輸入 2330，就先試 2330.TW，再試 2330.TWO。
-    使用者如果直接輸入 2330.TW，就直接使用。
-    """
     clean_symbol = symbol.strip().upper()
 
     if "." in clean_symbol:
@@ -55,14 +49,6 @@ def normalize_ticker_candidates(symbol: str):
 
 
 def fetch_real_price_series(symbol: str):
-    """
-    從 yfinance 抓最近 3 年日線資料。
-    回傳格式：
-    [
-      {"date": "2024-01-02", "close": 590.0},
-      ...
-    ]
-    """
     ticker_candidates = normalize_ticker_candidates(symbol)
 
     for ticker in ticker_candidates:
@@ -116,41 +102,6 @@ def fetch_real_price_series(symbol: str):
     )
 
 
-def generate_price_series(symbol: str, trading_days: int = 420):
-    """
-    備用模擬資料。
-    如果之後想離線測試，可以改回使用這個。
-    """
-    seed = sum(ord(char) for char in symbol)
-    rng = random.Random(seed)
-
-    start_price = 80 + seed % 500
-    current_date = date(2024, 1, 2)
-
-    data = []
-
-    while len(data) < trading_days:
-        if current_date.weekday() < 5:
-            i = len(data)
-
-            trend = 1 + i * 0.00025
-            cycle = 1 + 0.12 * math.sin(i / 18) + 0.08 * math.sin(i / 45)
-            noise = 1 + rng.uniform(-0.018, 0.018)
-
-            close = max(10, start_price * trend * cycle * noise)
-
-            data.append(
-                {
-                    "date": current_date.isoformat(),
-                    "close": round(close, 2),
-                }
-            )
-
-        current_date += timedelta(days=1)
-
-    return data
-
-
 def moving_average(values, window: int):
     result = []
 
@@ -161,6 +112,24 @@ def moving_average(values, window: int):
 
         window_values = values[i + 1 - window : i + 1]
         result.append(sum(window_values) / window)
+
+    return result
+
+
+def previous_high(values, window: int):
+    """
+    回傳「前 window 天最高收盤價」。
+    注意：不包含今天，避免偷看未來。
+    """
+    result = []
+
+    for i in range(len(values)):
+        if i < window:
+            result.append(None)
+            continue
+
+        window_values = values[i - window : i]
+        result.append(max(window_values))
 
     return result
 
@@ -200,7 +169,135 @@ def compress_equity_curve(daily_curve):
     ]
 
 
-def run_ma20_ma60_backtest(
+def get_signals(
+    strategy_name: str,
+    i: int,
+    closes,
+    ma20,
+    ma60,
+    high60,
+    shares: int,
+    entry_price,
+):
+    close = closes[i]
+    previous_close = closes[i - 1]
+
+    current_ma20 = ma20[i]
+    previous_ma20 = ma20[i - 1]
+
+    current_ma60 = ma60[i]
+    previous_ma60 = ma60[i - 1]
+
+    current_high60 = high60[i]
+
+    buy_signal = False
+    sell_signal = False
+
+    stop_loss_signal = (
+        shares > 0
+        and entry_price is not None
+        and close <= entry_price * (1 - STOP_LOSS_RATE)
+    )
+
+    # 策略 A：MA20 / MA60 黃金交叉
+    if strategy_name == "MA20 / MA60 黃金交叉":
+        buy_signal = (
+            shares == 0
+            and previous_ma20 is not None
+            and previous_ma60 is not None
+            and current_ma20 is not None
+            and current_ma60 is not None
+            and previous_ma20 <= previous_ma60
+            and current_ma20 > current_ma60
+        )
+
+        sell_signal = (
+            shares > 0
+            and previous_ma20 is not None
+            and previous_ma60 is not None
+            and current_ma20 is not None
+            and current_ma60 is not None
+            and previous_ma20 >= previous_ma60
+            and current_ma20 < current_ma60
+        )
+
+    # 策略 B：回測月線反彈
+    elif strategy_name == "回測月線反彈":
+        buy_signal = (
+            shares == 0
+            and previous_ma20 is not None
+            and current_ma20 is not None
+            and previous_close < previous_ma20
+            and close > current_ma20
+            and close > previous_close
+        )
+
+        sell_signal = (
+            shares > 0
+            and current_ma20 is not None
+            and close < current_ma20
+        )
+
+    # 策略 C：突破 60 日新高
+    elif strategy_name == "突破 60 日新高":
+        buy_signal = (
+            shares == 0
+            and current_high60 is not None
+            and close > current_high60
+        )
+
+        sell_signal = (
+            shares > 0
+            and current_ma20 is not None
+            and close < current_ma20
+        )
+
+    # 策略 D：投信連買 + 站上月線
+    # 目前還沒有法人資料，先用「重新站上 MA20」代替。
+    elif strategy_name == "投信連買 + 站上月線":
+        buy_signal = (
+            shares == 0
+            and previous_ma20 is not None
+            and current_ma20 is not None
+            and previous_close <= previous_ma20
+            and close > current_ma20
+        )
+
+        sell_signal = (
+            shares > 0
+            and current_ma20 is not None
+            and close < current_ma20
+        )
+
+    else:
+        # 如果前端傳來未知策略，預設使用 MA20 / MA60。
+        buy_signal = (
+            shares == 0
+            and previous_ma20 is not None
+            and previous_ma60 is not None
+            and current_ma20 is not None
+            and current_ma60 is not None
+            and previous_ma20 <= previous_ma60
+            and current_ma20 > current_ma60
+        )
+
+        sell_signal = (
+            shares > 0
+            and previous_ma20 is not None
+            and previous_ma60 is not None
+            and current_ma20 is not None
+            and current_ma60 is not None
+            and previous_ma20 >= previous_ma60
+            and current_ma20 < current_ma60
+        )
+
+    if stop_loss_signal:
+        sell_signal = True
+
+    return buy_signal, sell_signal
+
+
+def run_strategy_backtest(
     symbol: str,
     strategy_name: str,
     initial_capital: float,
@@ -209,8 +306,10 @@ def run_ma20_ma60_backtest(
     price_data = fetch_real_price_series(symbol)
 
     closes = [item["close"] for item in price_data]
+
     ma20 = moving_average(closes, 20)
     ma60 = moving_average(closes, 60)
+    high60 = previous_high(closes, 60)
 
     cash = initial_capital
     shares = 0
@@ -222,38 +321,28 @@ def run_ma20_ma60_backtest(
     trade_records = []
     daily_curve = []
 
-    benchmark_start_price = closes[59]
+    start_index = 60
+    benchmark_start_price = closes[start_index]
 
-    for i in range(60, len(price_data)):
+    for i in range(start_index, len(price_data)):
         today = price_data[i]
-        yesterday_index = i - 1
-
         close = today["close"]
 
-        current_ma20 = ma20[i]
-        current_ma60 = ma60[i]
-        previous_ma20 = ma20[yesterday_index]
-        previous_ma60 = ma60[yesterday_index]
-
-        buy_signal = (
-            shares == 0
-            and previous_ma20 is not None
-            and previous_ma60 is not None
-            and previous_ma20 <= previous_ma60
-            and current_ma20 > current_ma60
-        )
-
-        sell_signal = (
-            shares > 0
-            and previous_ma20 is not None
-            and previous_ma60 is not None
-            and previous_ma20 >= previous_ma60
-            and current_ma20 < current_ma60
+        buy_signal, sell_signal = get_signals(
+            strategy_name=strategy_name,
+            i=i,
+            closes=closes,
+            ma20=ma20,
+            ma60=ma60,
+            high60=high60,
+            shares=shares,
+            entry_price=entry_price,
         )
 
         if buy_signal:
             position_budget = cash * position_fraction
 
+            # 台股一張是 1000 股，但為了小資金測試，這裡先用 100 股為最小單位。
             buy_shares = int(position_budget // (close * 100)) * 100
             total_cost = buy_shares * close * (1 + FEE_RATE)
 
@@ -304,6 +393,7 @@ def run_ma20_ma60_backtest(
             }
         )
 
+    # 最後一天如果還有持股，強制用最後收盤價出場
     if shares > 0:
         final_day = price_data[-1]
         final_close = final_day["close"]
@@ -330,7 +420,6 @@ def run_ma20_ma60_backtest(
         )
 
         cash += proceeds
-        shares = 0
         daily_curve[-1]["strategy"] = cash
 
     final_equity = daily_curve[-1]["strategy"]
@@ -384,7 +473,7 @@ def run_backtest(request: BacktestRequest):
             detail="請輸入正確的初始資金，例如 1000000",
         )
 
-    return run_ma20_ma60_backtest(
+    return run_strategy_backtest(
         symbol=symbol,
         strategy_name=strategy,
         initial_capital=capital,
