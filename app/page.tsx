@@ -11,11 +11,6 @@ import TradeTable from "./components/TradeTable";
 
 import type { BacktestResult, EquityPoint, TradeRecord } from "./types";
 
-import {
-  generateEquityCurve,
-  generateTradeRecords,
-} from "./lib/fakeBacktest";
-
 const defaultCurve: EquityPoint[] = [
   { period: "第 1 月", strategy: 1000000, benchmark: 1000000 },
   { period: "第 2 月", strategy: 1032000, benchmark: 1010000 },
@@ -75,6 +70,7 @@ export default function Home() {
   const [strategy, setStrategy] = useState("MA20 / MA60 黃金交叉");
   const [capital, setCapital] = useState("1000000");
   const [positionSize, setPositionSize] = useState("20%");
+  const [isLoading, setIsLoading] = useState(false);
 
   const [result, setResult] = useState<BacktestResult>({
     symbol: "2330",
@@ -116,40 +112,44 @@ export default function Home() {
     },
   ]);
 
-  function runBacktest() {
+  async function runBacktest() {
     if (!symbol.trim()) {
       alert("請先輸入股票代號，例如 2330");
       return;
     }
 
-    const cleanCapital = Number(capital.replaceAll(",", ""));
+    setIsLoading(true);
 
-    if (!cleanCapital || cleanCapital <= 0) {
-      alert("請輸入正確的初始資金，例如 1000000");
-      return;
+    try {
+      const response = await fetch("/api/backtest", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          symbol,
+          strategy,
+          capital,
+          positionSize,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        alert(data.error || "回測失敗");
+        return;
+      }
+
+      setResult(data.result);
+      setEquityCurve(data.equityCurve);
+      setTradeRecords(data.tradeRecords);
+      setRecentResults([data.result, ...recentResults]);
+    } catch {
+      alert("無法連線到回測 API");
+    } finally {
+      setIsLoading(false);
     }
-
-    const fakeAnnualReturn = Number((Math.random() * 25 + 5).toFixed(1));
-    const fakeMaxDrawdown = Number(-(Math.random() * 20 + 5).toFixed(1));
-    const fakeWinRate = Number((Math.random() * 25 + 45).toFixed(1));
-    const fakeTrades = Math.floor(Math.random() * 60 + 10);
-
-    const newResult: BacktestResult = {
-      symbol: symbol.trim(),
-      strategy,
-      annualReturn: fakeAnnualReturn,
-      maxDrawdown: fakeMaxDrawdown,
-      winRate: fakeWinRate,
-      trades: fakeTrades,
-    };
-
-    const newCurve = generateEquityCurve(cleanCapital, fakeAnnualReturn);
-    const newTrades = generateTradeRecords(symbol.trim(), cleanCapital);
-
-    setResult(newResult);
-    setEquityCurve(newCurve);
-    setTradeRecords(newTrades);
-    setRecentResults([newResult, ...recentResults]);
   }
 
   return (
@@ -165,16 +165,17 @@ export default function Home() {
           </h1>
 
           <p className="mt-4 max-w-2xl text-slate-600">
-            輸入股票代號、選擇交易策略，系統會幫你回測歷史績效，
+            輸入股票代號、選擇交易策略，系統會透過 API 回傳回測結果，
             包含年化報酬、最大回撤、勝率、交易紀錄與資金曲線。
           </p>
 
           <div className="mt-6 flex flex-wrap gap-3">
             <button
               onClick={runBacktest}
-              className="rounded-2xl bg-slate-900 px-6 py-3 font-medium text-white"
+              disabled={isLoading}
+              className="rounded-2xl bg-slate-900 px-6 py-3 font-medium text-white disabled:cursor-not-allowed disabled:opacity-60"
             >
-              開始回測
+              {isLoading ? "回測中..." : "開始回測"}
             </button>
 
             <button className="rounded-2xl border border-slate-300 px-6 py-3 font-medium text-slate-700">
@@ -185,7 +186,11 @@ export default function Home() {
 
         <section className="grid gap-4 md:grid-cols-4">
           <MetricCard label="年化報酬" value={`${result.annualReturn}%`} />
-          <MetricCard label="最大回撤" value={`${result.maxDrawdown}%`} danger />
+          <MetricCard
+            label="最大回撤"
+            value={`${result.maxDrawdown}%`}
+            danger
+          />
           <MetricCard label="勝率" value={`${result.winRate}%`} />
           <MetricCard label="交易次數" value={result.trades} />
         </section>
@@ -233,7 +238,7 @@ export default function Home() {
 
             <div className="rounded-2xl bg-blue-50 p-4">
               <p className="font-medium text-blue-700">第 4 階段</p>
-              <p className="mt-1 text-sm text-blue-700">元件拆分完成</p>
+              <p className="mt-1 text-sm text-blue-700">API 回測完成</p>
             </div>
           </div>
         </section>
