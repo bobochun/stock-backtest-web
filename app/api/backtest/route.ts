@@ -1,9 +1,3 @@
-import type { BacktestResult } from "../../types";
-import {
-  generateEquityCurve,
-  generateTradeRecords,
-} from "../../lib/fakeBacktest";
-
 export async function POST(request: Request) {
   try {
     const body = await request.json();
@@ -26,31 +20,32 @@ export async function POST(request: Request) {
       );
     }
 
-    const fakeAnnualReturn = Number((Math.random() * 25 + 5).toFixed(1));
-    const fakeMaxDrawdown = Number(-(Math.random() * 20 + 5).toFixed(1));
-    const fakeWinRate = Number((Math.random() * 25 + 45).toFixed(1));
-    const fakeTrades = Math.floor(Math.random() * 60 + 10);
-
-    const result: BacktestResult = {
-      symbol,
-      strategy,
-      annualReturn: fakeAnnualReturn,
-      maxDrawdown: fakeMaxDrawdown,
-      winRate: fakeWinRate,
-      trades: fakeTrades,
-    };
-
-    const equityCurve = generateEquityCurve(capital, fakeAnnualReturn);
-    const tradeRecords = generateTradeRecords(symbol, capital);
-
-    return Response.json({
-      result,
-      equityCurve,
-      tradeRecords,
+    const response = await fetch("http://127.0.0.1:8000/backtest", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        symbol,
+        strategy,
+        capital: capital.toString(),
+        positionSize: body.positionSize || "20%",
+      }),
     });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      return Response.json(
+        { error: data.detail || "Python 回測 API 發生錯誤" },
+        { status: response.status }
+      );
+    }
+
+    return Response.json(data);
   } catch {
     return Response.json(
-      { error: "回測 API 發生錯誤" },
+      { error: "無法連線到 Python FastAPI，請確認 port 8000 有啟動" },
       { status: 500 }
     );
   }
