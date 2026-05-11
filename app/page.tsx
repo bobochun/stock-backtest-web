@@ -72,6 +72,8 @@ export default function Home() {
   const [positionSize, setPositionSize] = useState("20%");
   const [stopLoss, setStopLoss] = useState("8%");
   const [takeProfit, setTakeProfit] = useState("15%");
+  const [startDate, setStartDate] = useState("2023-01-01");
+  const [endDate, setEndDate] = useState("");
   const [isLoading, setIsLoading] = useState(false);
 
   const [result, setResult] = useState<BacktestResult>({
@@ -123,7 +125,7 @@ export default function Home() {
     setIsLoading(true);
 
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 20000);
+    const timeoutId = setTimeout(() => controller.abort(), 30000);
 
     try {
       const response = await fetch("/api/backtest", {
@@ -138,6 +140,8 @@ export default function Home() {
           positionSize,
           stopLoss,
           takeProfit,
+          startDate,
+          endDate,
         }),
         signal: controller.signal,
       });
@@ -174,7 +178,7 @@ export default function Home() {
           </h1>
 
           <p className="mt-4 max-w-2xl text-slate-600">
-            輸入股票代號、選擇交易策略，系統會透過 Python API
+            輸入股票代號、選擇交易策略與日期區間，系統會透過 Python API
             回傳回測結果，包含年化報酬、最大回撤、勝率、交易紀錄與資金曲線。
           </p>
 
@@ -212,6 +216,8 @@ export default function Home() {
             positionSize={positionSize}
             stopLoss={stopLoss}
             takeProfit={takeProfit}
+            startDate={startDate}
+            endDate={endDate}
             isLoading={isLoading}
             setSymbol={setSymbol}
             setStrategy={setStrategy}
@@ -219,6 +225,8 @@ export default function Home() {
             setPositionSize={setPositionSize}
             setStopLoss={setStopLoss}
             setTakeProfit={setTakeProfit}
+            setStartDate={setStartDate}
+            setEndDate={setEndDate}
             runBacktest={runBacktest}
           />
 
@@ -242,17 +250,17 @@ export default function Home() {
 
             <div className="rounded-2xl bg-green-50 p-4">
               <p className="font-medium text-green-700">第 2 階段</p>
-              <p className="mt-1 text-sm text-green-700">假資料互動</p>
+              <p className="mt-1 text-sm text-green-700">多策略回測</p>
             </div>
 
             <div className="rounded-2xl bg-green-50 p-4">
               <p className="font-medium text-green-700">第 3 階段</p>
-              <p className="mt-1 text-sm text-green-700">真實資料回測</p>
+              <p className="mt-1 text-sm text-green-700">停損停利</p>
             </div>
 
             <div className="rounded-2xl bg-blue-50 p-4">
               <p className="font-medium text-blue-700">第 4 階段</p>
-              <p className="mt-1 text-sm text-blue-700">停損停利參數</p>
+              <p className="mt-1 text-sm text-blue-700">日期區間</p>
             </div>
           </div>
         </section>

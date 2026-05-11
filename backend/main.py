@@ -1,5 +1,6 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
+from datetime import date, timedelta
 
 import pandas as pd
 import yfinance as yf
@@ -17,6 +18,8 @@ class BacktestRequest(BaseModel):
     positionSize: str
     stopLoss: str = "8%"
     takeProfit: str = "15%"
+    startDate: str = "2023-01-01"
+    endDate: str = ""
 
 
 def clean_capital(capital: str) -> float:
@@ -41,11 +44,6 @@ def parse_position_size(position_size: str) -> float:
 
 
 def parse_percent(value: str, default_value: float) -> float:
-    """
-    8% -> 0.08
-    15% -> 0.15
-    0.08 -> 0.08
-    """
     clean_value = str(value).replace("%", "").strip()
 
     try:
@@ -59,6 +57,27 @@ def parse_percent(value: str, default_value: float) -> float:
     return min(max(number, 0), 1)
 
 
+def normalize_date_range(start_date: str, end_date: str):
+    today = date.today()
+
+    clean_start = str(start_date).strip()
+    clean_end = str(end_date).strip()
+
+    if not clean_start:
+        clean_start = (today - timedelta(days=365 * 3)).isoformat()
+
+    if not clean_end:
+        clean_end = today.isoformat()
+
+    if clean_start >= clean_end:
+        raise HTTPException(
+            status_code=400,
+            detail="開始日期必須早於結束日期",
+        )
+
+    return clean_start, clean_end
+
+
 def normalize_ticker_candidates(symbol: str):
     clean_symbol = symbol.strip().upper()
 
@@ -68,14 +87,15 @@ def normalize_ticker_candidates(symbol: str):
     return [f"{clean_symbol}.TW", f"{clean_symbol}.TWO"]
 
 
-def fetch_real_price_series(symbol: str):
+def fetch_real_price_series(symbol: str, start_date: str, end_date: str):
     ticker_candidates = normalize_ticker_candidates(symbol)
 
     for ticker in ticker_candidates:
         try:
             df = yf.download(
                 ticker,
-                period="3y",
+                start=start_date,
+                end=end_date,
                 interval="1d",
                 auto_adjust=True,
                 progress=False,
@@ -118,7 +138,7 @@ def fetch_real_price_series(symbol: str):
 
     raise HTTPException(
         status_code=404,
-        detail=f"找不到 {symbol} 的足夠歷史股價資料。可試試 2330、2454、2317，或直接輸入 2330.TW。",
+        detail=f"找不到 {symbol} 在 {start_date} 到 {end_date} 之間的足夠歷史股價資料。可試試 2330、2454、2317，或直接輸入 2330.TW。",
     )
 
 
@@ -137,10 +157,6 @@ def moving_average(values, window: int):
 
 
 def previous_high(values, window: int):
-    """
-    回傳前 window 天最高收盤價。
-    不包含今天，避免偷看未來。
-    """
     result = []
 
     for i in range(len(values)):
@@ -229,7 +245,6 @@ def get_signals(
         and close >= entry_price * (1 + take_profit_rate)
     )
 
-    # 策略 A：MA20 / MA60 黃金交叉
     if strategy_name == "MA20 / MA60 黃金交叉":
         buy_signal = (
             shares == 0
@@ -251,7 +266,6 @@ def get_signals(
             and current_ma20 < current_ma60
         )
 
-    # 策略 B：回測月線反彈
     elif strategy_name == "回測月線反彈":
         buy_signal = (
             shares == 0
@@ -268,7 +282,6 @@ def get_signals(
             and close < current_ma20
         )
 
-    # 策略 C：突破 60 日新高
     elif strategy_name == "突破 60 日新高":
         buy_signal = (
             shares == 0
@@ -282,8 +295,6 @@ def get_signals(
             and close < current_ma20
         )
 
-    # 策略 D：投信連買 + 站上月線
-    # 目前還沒有法人資料，先用「重新站上 MA20」代替。
     elif strategy_name == "投信連買 + 站上月線":
         buy_signal = (
             shares == 0
@@ -300,7 +311,6 @@ def get_signals(
         )
 
     else:
-        # 未知策略預設使用 MA20 / MA60。
         buy_signal = (
             shares == 0
             and previous_ma20 is not None
@@ -334,8 +344,10 @@ def run_strategy_backtest(
     position_fraction: float,
     stop_loss_rate: float,
     take_profit_rate: float,
+    start_date: str,
+    end_date: str,
 ):
-    price_data = fetch_real_price_series(symbol)
+    price_data = fetch_real_price_series(symbol, start_date, end_date)
 
     closes = [item["close"] for item in price_data]
 
@@ -376,7 +388,6 @@ def run_strategy_backtest(
         if buy_signal:
             position_budget = cash * position_fraction
 
-            # 台股一張是 1000 股，這裡先用 100 股為最小單位，方便小資金測試。
             buy_shares = int(position_budget // (close * 100)) * 100
             total_cost = buy_shares * close * (1 + FEE_RATE)
 
@@ -427,7 +438,6 @@ def run_strategy_backtest(
             }
         )
 
-    # 最後一天如果還有持股，強制用最後收盤價出場。
     if shares > 0:
         final_day = price_data[-1]
         final_close = final_day["close"]
@@ -499,6 +509,7 @@ def run_backtest(request: BacktestRequest):
     position_fraction = parse_position_size(request.positionSize)
     stop_loss_rate = parse_percent(request.stopLoss, 0.08)
     take_profit_rate = parse_percent(request.takeProfit, 0.15)
+    start_date, end_date = normalize_date_range(request.startDate, request.endDate)
 
     if not symbol:
         raise HTTPException(status_code=400, detail="請輸入股票代號，例如 2330")
@@ -516,4 +527,6 @@ def run_backtest(request: BacktestRequest):
         position_fraction=position_fraction,
         stop_loss_rate=stop_loss_rate,
         take_profit_rate=take_profit_rate,
+        start_date=start_date,
+        end_date=end_date,
     )

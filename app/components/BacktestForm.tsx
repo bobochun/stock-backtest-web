@@ -5,6 +5,8 @@ type BacktestFormProps = {
   positionSize: string;
   stopLoss: string;
   takeProfit: string;
+  startDate: string;
+  endDate: string;
   isLoading: boolean;
   setSymbol: (value: string) => void;
   setStrategy: (value: string) => void;
@@ -12,6 +14,8 @@ type BacktestFormProps = {
   setPositionSize: (value: string) => void;
   setStopLoss: (value: string) => void;
   setTakeProfit: (value: string) => void;
+  setStartDate: (value: string) => void;
+  setEndDate: (value: string) => void;
   runBacktest: () => void;
 };
 
@@ -22,6 +26,8 @@ export default function BacktestForm({
   positionSize,
   stopLoss,
   takeProfit,
+  startDate,
+  endDate,
   isLoading,
   setSymbol,
   setStrategy,
@@ -29,6 +35,8 @@ export default function BacktestForm({
   setPositionSize,
   setStopLoss,
   setTakeProfit,
+  setStartDate,
+  setEndDate,
   runBacktest,
 }: BacktestFormProps) {
   return (
@@ -100,6 +108,28 @@ export default function BacktestForm({
               onChange={(event) => setTakeProfit(event.target.value)}
               className="mt-2 w-full rounded-xl border border-slate-300 px-4 py-3"
               placeholder="15%"
+            />
+          </div>
+        </div>
+
+        <div className="grid gap-4 md:grid-cols-2">
+          <div>
+            <label className="text-sm text-slate-600">開始日期</label>
+            <input
+              type="date"
+              value={startDate}
+              onChange={(event) => setStartDate(event.target.value)}
+              className="mt-2 w-full rounded-xl border border-slate-300 px-4 py-3"
+            />
+          </div>
+
+          <div>
+            <label className="text-sm text-slate-600">結束日期</label>
+            <input
+              type="date"
+              value={endDate}
+              onChange={(event) => setEndDate(event.target.value)}
+              className="mt-2 w-full rounded-xl border border-slate-300 px-4 py-3"
             />
           </div>
         </div>
