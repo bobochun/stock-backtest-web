@@ -9,8 +9,14 @@ import RecentResults from "./components/RecentResults";
 import ResultSummary from "./components/ResultSummary";
 import StrategyComparison from "./components/StrategyComparison";
 import TradeTable from "./components/TradeTable";
+import WatchlistScanner from "./components/WatchlistScanner";
 
-import type { BacktestResult, EquityPoint, TradeRecord } from "./types";
+import type {
+  BacktestResult,
+  EquityPoint,
+  ScanError,
+  TradeRecord,
+} from "./types";
 
 const defaultCurve: EquityPoint[] = [
   { period: "第 1 月", strategy: 1000000, benchmark: 1000000 },
@@ -31,6 +37,7 @@ const defaultTrades: TradeRecord[] = [
   {
     id: 1,
     symbol: "2330",
+    stockName: "台積電",
     entryDate: "2025-01-10",
     exitDate: "2025-02-14",
     entryPrice: 620,
@@ -43,6 +50,7 @@ const defaultTrades: TradeRecord[] = [
   {
     id: 2,
     symbol: "2330",
+    stockName: "台積電",
     entryDate: "2025-03-05",
     exitDate: "2025-03-28",
     entryPrice: 680,
@@ -55,6 +63,7 @@ const defaultTrades: TradeRecord[] = [
   {
     id: 3,
     symbol: "2330",
+    stockName: "台積電",
     entryDate: "2025-05-08",
     exitDate: "2025-06-20",
     entryPrice: 640,
@@ -68,6 +77,10 @@ const defaultTrades: TradeRecord[] = [
 
 export default function Home() {
   const [symbol, setSymbol] = useState("");
+  const [watchlistSymbols, setWatchlistSymbols] = useState(
+    "2330, 2454, 2317, 2382, 0050, 006208, 00878"
+  );
+
   const [strategy, setStrategy] = useState("MA20 / MA60 黃金交叉");
   const [capital, setCapital] = useState("1000000");
   const [positionSize, setPositionSize] = useState("20%");
@@ -75,12 +88,18 @@ export default function Home() {
   const [takeProfit, setTakeProfit] = useState("15%");
   const [startDate, setStartDate] = useState("2023-01-01");
   const [endDate, setEndDate] = useState("");
+
   const [isLoading, setIsLoading] = useState(false);
   const [isComparing, setIsComparing] = useState(false);
+  const [isScanning, setIsScanning] = useState(false);
+
   const [compareResults, setCompareResults] = useState<BacktestResult[]>([]);
+  const [scanResults, setScanResults] = useState<BacktestResult[]>([]);
+  const [scanErrors, setScanErrors] = useState<ScanError[]>([]);
 
   const [result, setResult] = useState<BacktestResult>({
     symbol: "2330",
+    stockName: "台積電",
     strategy: "MA20 / MA60 黃金交叉",
     annualReturn: 18.7,
     maxDrawdown: -13.2,
@@ -95,6 +114,7 @@ export default function Home() {
   const [recentResults, setRecentResults] = useState<BacktestResult[]>([
     {
       symbol: "2330",
+      stockName: "台積電",
       strategy: "MA20 / MA60 黃金交叉",
       annualReturn: 22.4,
       maxDrawdown: -12.8,
@@ -103,6 +123,7 @@ export default function Home() {
     },
     {
       symbol: "2454",
+      stockName: "聯發科",
       strategy: "突破 60 日新高",
       annualReturn: 16.8,
       maxDrawdown: -15.4,
@@ -111,6 +132,7 @@ export default function Home() {
     },
     {
       symbol: "2382",
+      stockName: "廣達",
       strategy: "回測月線反彈",
       annualReturn: 19.1,
       maxDrawdown: -11.6,
@@ -118,6 +140,18 @@ export default function Home() {
       trades: 31,
     },
   ]);
+
+  const requestBody = {
+    symbol,
+    symbols: watchlistSymbols,
+    strategy,
+    capital,
+    positionSize,
+    stopLoss,
+    takeProfit,
+    startDate,
+    endDate,
+  };
 
   async function runBacktest() {
     if (!symbol.trim()) {
@@ -136,16 +170,7 @@ export default function Home() {
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({
-          symbol,
-          strategy,
-          capital,
-          positionSize,
-          stopLoss,
-          takeProfit,
-          startDate,
-          endDate,
-        }),
+        body: JSON.stringify(requestBody),
         signal: controller.signal,
       });
 
@@ -185,16 +210,7 @@ export default function Home() {
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({
-          symbol,
-          strategy,
-          capital,
-          positionSize,
-          stopLoss,
-          takeProfit,
-          startDate,
-          endDate,
-        }),
+        body: JSON.stringify(requestBody),
         signal: controller.signal,
       });
 
@@ -214,6 +230,39 @@ export default function Home() {
     }
   }
 
+  async function scanWatchlist() {
+    setIsScanning(true);
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 90000);
+
+    try {
+      const response = await fetch("/api/scan", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(requestBody),
+        signal: controller.signal,
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        alert(data.error || "觀察清單掃描失敗");
+        return;
+      }
+
+      setScanResults(data.results || []);
+      setScanErrors(data.errors || []);
+    } catch {
+      alert("觀察清單掃描逾時或無法連線到後端，請確認 FastAPI port 8000 有啟動");
+    } finally {
+      clearTimeout(timeoutId);
+      setIsScanning(false);
+    }
+  }
+
   return (
     <main className="min-h-screen bg-slate-100 p-6">
       <div className="mx-auto max-w-6xl space-y-6">
@@ -227,27 +276,8 @@ export default function Home() {
           </h1>
 
           <p className="mt-4 max-w-2xl text-slate-600">
-            輸入股票代號、選擇交易策略與日期區間，系統會透過 Python API
-            回傳回測結果，包含年化報酬、最大回撤、勝率、交易紀錄與資金曲線。
+            支援單一股票回測、多策略比較、觀察清單批次掃描、停損停利、日期區間、CSV 匯出、股票中文名稱與目前訊號判斷。
           </p>
-
-          <div className="mt-6 flex flex-wrap gap-3">
-            <button
-              onClick={runBacktest}
-              disabled={isLoading}
-              className="rounded-2xl bg-slate-900 px-6 py-3 font-medium text-white disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {isLoading ? "回測中..." : "開始回測"}
-            </button>
-
-            <button
-              onClick={compareStrategies}
-              disabled={isComparing}
-              className="rounded-2xl border border-slate-300 px-6 py-3 font-medium text-slate-700 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {isComparing ? "比較中..." : "比較所有策略"}
-            </button>
-          </div>
         </section>
 
         <section className="grid gap-4 md:grid-cols-4">
@@ -264,6 +294,7 @@ export default function Home() {
         <section className="grid gap-6 md:grid-cols-2">
           <BacktestForm
             symbol={symbol}
+            watchlistSymbols={watchlistSymbols}
             strategy={strategy}
             capital={capital}
             positionSize={positionSize}
@@ -272,7 +303,10 @@ export default function Home() {
             startDate={startDate}
             endDate={endDate}
             isLoading={isLoading}
+            isComparing={isComparing}
+            isScanning={isScanning}
             setSymbol={setSymbol}
+            setWatchlistSymbols={setWatchlistSymbols}
             setStrategy={setStrategy}
             setCapital={setCapital}
             setPositionSize={setPositionSize}
@@ -281,6 +315,8 @@ export default function Home() {
             setStartDate={setStartDate}
             setEndDate={setEndDate}
             runBacktest={runBacktest}
+            compareStrategies={compareStrategies}
+            scanWatchlist={scanWatchlist}
           />
 
           <ResultSummary result={result} />
@@ -292,6 +328,8 @@ export default function Home() {
 
         <StrategyComparison results={compareResults} />
 
+        <WatchlistScanner results={scanResults} errors={scanErrors} />
+
         <RecentResults recentResults={recentResults} />
 
         <section className="rounded-3xl bg-white p-6 shadow-sm">
@@ -300,24 +338,22 @@ export default function Home() {
           <div className="mt-5 grid gap-4 md:grid-cols-4">
             <div className="rounded-2xl bg-green-50 p-4">
               <p className="font-medium text-green-700">第 1 階段</p>
-              <p className="mt-1 text-sm text-green-700">前端 Dashboard</p>
+              <p className="mt-1 text-sm text-green-700">單一股票回測</p>
             </div>
 
             <div className="rounded-2xl bg-green-50 p-4">
               <p className="font-medium text-green-700">第 2 階段</p>
-              <p className="mt-1 text-sm text-green-700">多策略回測</p>
+              <p className="mt-1 text-sm text-green-700">多策略比較</p>
             </div>
 
             <div className="rounded-2xl bg-green-50 p-4">
               <p className="font-medium text-green-700">第 3 階段</p>
-              <p className="mt-1 text-sm text-green-700">
-                停損停利 / 日期區間
-              </p>
+              <p className="mt-1 text-sm text-green-700">觀察清單掃描</p>
             </div>
 
             <div className="rounded-2xl bg-blue-50 p-4">
               <p className="font-medium text-blue-700">第 4 階段</p>
-              <p className="mt-1 text-sm text-blue-700">策略比較</p>
+              <p className="mt-1 text-sm text-blue-700">中文名稱 / CSV</p>
             </div>
           </div>
         </section>

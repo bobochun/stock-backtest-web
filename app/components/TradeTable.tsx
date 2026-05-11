@@ -1,12 +1,39 @@
+"use client";
+
 import type { TradeRecord } from "../types";
-import { formatMoney, formatNumber } from "../lib/fakeBacktest";
+import { downloadCsv } from "../lib/exportCsv";
 
 type TradeTableProps = {
   tradeRecords: TradeRecord[];
 };
 
+function formatMoney(value: number) {
+  return `NT$ ${Math.round(value).toLocaleString("zh-TW")}`;
+}
+
+function formatNumber(value: number) {
+  return Math.round(value).toLocaleString("zh-TW");
+}
+
 export default function TradeTable({ tradeRecords }: TradeTableProps) {
   const totalPnl = tradeRecords.reduce((sum, trade) => sum + trade.pnl, 0);
+
+  function handleDownloadTrades() {
+    const rows = tradeRecords.map((trade) => ({
+      股票代號: trade.symbol,
+      股票名稱: trade.stockName || "",
+      買進日: trade.entryDate,
+      賣出日: trade.exitDate,
+      買進價: trade.entryPrice,
+      賣出價: trade.exitPrice,
+      股數: trade.shares,
+      損益: trade.pnl,
+      報酬率百分比: trade.pnlPct,
+      結果: trade.result,
+    }));
+
+    downloadCsv("trade-records.csv", rows);
+  }
 
   return (
     <section className="rounded-3xl bg-white p-6 shadow-sm">
@@ -18,25 +45,35 @@ export default function TradeTable({ tradeRecords }: TradeTableProps) {
           </p>
         </div>
 
-        <div className="rounded-2xl bg-slate-100 px-4 py-3 text-sm text-slate-700">
-          總損益：
-          <span
-            className={
-              totalPnl >= 0
-                ? "font-bold text-green-600"
-                : "font-bold text-red-600"
-            }
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="rounded-2xl bg-slate-100 px-4 py-3 text-sm text-slate-700">
+            總損益：
+            <span
+              className={
+                totalPnl >= 0
+                  ? "font-bold text-green-600"
+                  : "font-bold text-red-600"
+              }
+            >
+              {formatMoney(totalPnl)}
+            </span>
+          </div>
+
+          <button
+            onClick={handleDownloadTrades}
+            className="rounded-2xl border border-slate-300 px-4 py-3 text-sm font-medium text-slate-700"
           >
-            {formatMoney(totalPnl)}
-          </span>
+            下載交易紀錄 CSV
+          </button>
         </div>
       </div>
 
       <div className="mt-6 overflow-x-auto">
-        <table className="w-full min-w-[900px] border-separate border-spacing-y-3">
+        <table className="w-full min-w-[1000px] border-separate border-spacing-y-3">
           <thead>
             <tr className="text-left text-sm text-slate-500">
               <th className="px-4">股票</th>
+              <th className="px-4">名稱</th>
               <th className="px-4">買進日</th>
               <th className="px-4">賣出日</th>
               <th className="px-4">買進價</th>
@@ -54,17 +91,27 @@ export default function TradeTable({ tradeRecords }: TradeTableProps) {
                 <td className="rounded-l-2xl px-4 py-4 font-medium text-slate-900">
                   {trade.symbol}
                 </td>
+
+                <td className="px-4 py-4 text-slate-700">
+                  {trade.stockName || "-"}
+                </td>
+
                 <td className="px-4 py-4 text-slate-700">
                   {trade.entryDate}
                 </td>
+
                 <td className="px-4 py-4 text-slate-700">{trade.exitDate}</td>
+
                 <td className="px-4 py-4 text-slate-700">
                   {trade.entryPrice}
                 </td>
+
                 <td className="px-4 py-4 text-slate-700">{trade.exitPrice}</td>
+
                 <td className="px-4 py-4 text-slate-700">
                   {formatNumber(trade.shares)}
                 </td>
+
                 <td
                   className={
                     trade.pnl >= 0
@@ -74,6 +121,7 @@ export default function TradeTable({ tradeRecords }: TradeTableProps) {
                 >
                   {formatMoney(trade.pnl)}
                 </td>
+
                 <td
                   className={
                     trade.pnlPct >= 0
@@ -83,6 +131,7 @@ export default function TradeTable({ tradeRecords }: TradeTableProps) {
                 >
                   {trade.pnlPct}%
                 </td>
+
                 <td className="rounded-r-2xl px-4 py-4">
                   <span
                     className={

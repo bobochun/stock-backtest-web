@@ -1,20 +1,22 @@
 "use client";
 
-import type { BacktestResult } from "../types";
+import type { BacktestResult, ScanError } from "../types";
 import { downloadCsv } from "../lib/exportCsv";
 
-type StrategyComparisonProps = {
+type WatchlistScannerProps = {
   results: BacktestResult[];
+  errors: ScanError[];
 };
 
-export default function StrategyComparison({
+export default function WatchlistScanner({
   results,
-}: StrategyComparisonProps) {
-  if (results.length === 0) {
+  errors,
+}: WatchlistScannerProps) {
+  if (results.length === 0 && errors.length === 0) {
     return null;
   }
 
-  function handleDownloadComparison() {
+  function handleDownloadScan() {
     const rows = results.map((item, index) => ({
       排名: index + 1,
       股票代號: item.symbol,
@@ -35,46 +37,42 @@ export default function StrategyComparison({
       資料結束日: item.dataEndDate || "",
     }));
 
-    downloadCsv("strategy-comparison.csv", rows);
+    downloadCsv("watchlist-scan.csv", rows);
   }
 
   return (
     <section className="rounded-3xl bg-white p-6 shadow-sm">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h2 className="text-xl font-bold text-slate-900">策略比較</h2>
+          <h2 className="text-xl font-bold text-slate-900">觀察清單掃描</h2>
           <p className="mt-1 text-sm text-slate-500">
-            同一支股票、同一日期區間下，比較不同策略的績效表現。
+            針對多檔股票批次回測同一策略，並依訊號與年化報酬排序。
           </p>
         </div>
 
-        <div className="flex flex-wrap items-center gap-3">
-          <div className="rounded-2xl bg-blue-50 px-4 py-3 text-sm font-medium text-blue-700">
-            依年化報酬排序
-          </div>
-
-          <button
-            onClick={handleDownloadComparison}
-            className="rounded-2xl border border-slate-300 px-4 py-3 text-sm font-medium text-slate-700"
-          >
-            下載策略比較 CSV
-          </button>
-        </div>
+        <button
+          onClick={handleDownloadScan}
+          className="rounded-2xl border border-slate-300 px-4 py-3 text-sm font-medium text-slate-700"
+        >
+          下載掃描結果 CSV
+        </button>
       </div>
 
       <div className="mt-6 overflow-x-auto">
-        <table className="w-full min-w-[1150px] border-separate border-spacing-y-3">
+        <table className="w-full min-w-[1250px] border-separate border-spacing-y-3">
           <thead>
             <tr className="text-left text-sm text-slate-500">
               <th className="px-4">排名</th>
               <th className="px-4">股票</th>
               <th className="px-4">名稱</th>
               <th className="px-4">市場</th>
-              <th className="px-4">策略</th>
+              <th className="px-4">實際代號</th>
               <th className="px-4">年化報酬</th>
               <th className="px-4">最大回撤</th>
               <th className="px-4">勝率</th>
-              <th className="px-4">交易次數</th>
+              <th className="px-4">交易</th>
+              <th className="px-4">收盤</th>
+              <th className="px-4">MA20 / MA60</th>
               <th className="px-4">目前訊號</th>
             </tr>
           </thead>
@@ -101,16 +99,8 @@ export default function StrategyComparison({
                   {item.market || "-"}
                 </td>
 
-                <td className="px-4 py-4">
-                  <div className="font-medium text-slate-900">
-                    {item.strategy}
-                  </div>
-
-                  {index === 0 && (
-                    <span className="mt-2 inline-flex rounded-full bg-green-100 px-3 py-1 text-xs font-medium text-green-700">
-                      目前最佳
-                    </span>
-                  )}
+                <td className="px-4 py-4 text-slate-700">
+                  {item.tickerUsed || "-"}
                 </td>
 
                 <td
@@ -133,6 +123,19 @@ export default function StrategyComparison({
 
                 <td className="px-4 py-4 text-slate-700">{item.trades}</td>
 
+                <td className="px-4 py-4 text-slate-700">
+                  {item.lastClose || "-"}
+                </td>
+
+                <td className="px-4 py-4 text-slate-700">
+                  {item.ma20 !== undefined &&
+                  item.ma20 !== null &&
+                  item.ma60 !== undefined &&
+                  item.ma60 !== null
+                    ? `${item.ma20} / ${item.ma60}`
+                    : "-"}
+                </td>
+
                 <td className="rounded-r-2xl px-4 py-4 font-medium text-blue-700">
                   {item.currentSignal || "-"}
                 </td>
@@ -141,6 +144,22 @@ export default function StrategyComparison({
           </tbody>
         </table>
       </div>
+
+      {errors.length > 0 && (
+        <div className="mt-5 rounded-2xl bg-red-50 p-4">
+          <p className="font-medium text-red-700">部分股票抓取失敗</p>
+
+          <div className="mt-2 space-y-1 text-sm text-red-700">
+            {errors.map((error) => (
+              <p key={error.symbol}>
+                {error.symbol}
+                {error.stockName ? `｜${error.stockName}` : ""}
+                {error.market ? `｜${error.market}` : ""}: {error.message}
+              </p>
+            ))}
+          </div>
+        </div>
+      )}
     </section>
   );
 }

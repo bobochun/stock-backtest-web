@@ -1,5 +1,6 @@
 type BacktestFormProps = {
   symbol: string;
+  watchlistSymbols: string;
   strategy: string;
   capital: string;
   positionSize: string;
@@ -8,7 +9,10 @@ type BacktestFormProps = {
   startDate: string;
   endDate: string;
   isLoading: boolean;
+  isComparing: boolean;
+  isScanning: boolean;
   setSymbol: (value: string) => void;
+  setWatchlistSymbols: (value: string) => void;
   setStrategy: (value: string) => void;
   setCapital: (value: string) => void;
   setPositionSize: (value: string) => void;
@@ -17,10 +21,13 @@ type BacktestFormProps = {
   setStartDate: (value: string) => void;
   setEndDate: (value: string) => void;
   runBacktest: () => void;
+  compareStrategies: () => void;
+  scanWatchlist: () => void;
 };
 
 export default function BacktestForm({
   symbol,
+  watchlistSymbols,
   strategy,
   capital,
   positionSize,
@@ -29,7 +36,10 @@ export default function BacktestForm({
   startDate,
   endDate,
   isLoading,
+  isComparing,
+  isScanning,
   setSymbol,
+  setWatchlistSymbols,
   setStrategy,
   setCapital,
   setPositionSize,
@@ -38,6 +48,8 @@ export default function BacktestForm({
   setStartDate,
   setEndDate,
   runBacktest,
+  compareStrategies,
+  scanWatchlist,
 }: BacktestFormProps) {
   return (
     <div className="rounded-3xl bg-white p-6 shadow-sm">
@@ -45,13 +57,26 @@ export default function BacktestForm({
 
       <div className="mt-5 space-y-4">
         <div>
-          <label className="text-sm text-slate-600">股票代號</label>
+          <label className="text-sm text-slate-600">單一股票代號</label>
           <input
             value={symbol}
             onChange={(event) => setSymbol(event.target.value)}
             className="mt-2 w-full rounded-xl border border-slate-300 px-4 py-3"
-            placeholder="例如：2330"
+            placeholder="例如：2330、0050、006208"
           />
+        </div>
+
+        <div>
+          <label className="text-sm text-slate-600">觀察清單</label>
+          <textarea
+            value={watchlistSymbols}
+            onChange={(event) => setWatchlistSymbols(event.target.value)}
+            className="mt-2 min-h-24 w-full rounded-xl border border-slate-300 px-4 py-3"
+            placeholder="例如：2330, 2454, 2317, 2382, 0050, 006208"
+          />
+          <p className="mt-1 text-xs text-slate-500">
+            可用逗號、空格或換行分隔，最多掃描 20 檔。
+          </p>
         </div>
 
         <div>
@@ -134,13 +159,31 @@ export default function BacktestForm({
           </div>
         </div>
 
-        <button
-          onClick={runBacktest}
-          disabled={isLoading}
-          className="w-full rounded-2xl bg-blue-600 px-6 py-3 font-medium text-white disabled:cursor-not-allowed disabled:opacity-60"
-        >
-          {isLoading ? "回測中..." : "執行回測"}
-        </button>
+        <div className="grid gap-3 md:grid-cols-3">
+          <button
+            onClick={runBacktest}
+            disabled={isLoading}
+            className="rounded-2xl bg-blue-600 px-6 py-3 font-medium text-white disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {isLoading ? "回測中..." : "執行回測"}
+          </button>
+
+          <button
+            onClick={compareStrategies}
+            disabled={isComparing}
+            className="rounded-2xl border border-slate-300 px-6 py-3 font-medium text-slate-700 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {isComparing ? "比較中..." : "比較策略"}
+          </button>
+
+          <button
+            onClick={scanWatchlist}
+            disabled={isScanning}
+            className="rounded-2xl bg-slate-900 px-6 py-3 font-medium text-white disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {isScanning ? "掃描中..." : "掃描清單"}
+          </button>
+        </div>
       </div>
     </div>
   );
