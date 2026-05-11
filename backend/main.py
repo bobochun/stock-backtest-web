@@ -10,6 +10,13 @@ app = FastAPI()
 FEE_RATE = 0.001425
 TAX_RATE = 0.003
 
+STRATEGIES = [
+    "MA20 / MA60 黃金交叉",
+    "回測月線反彈",
+    "突破 60 日新高",
+    "投信連買 + 站上月線",
+]
+
 
 class BacktestRequest(BaseModel):
     symbol: str
@@ -346,8 +353,10 @@ def run_strategy_backtest(
     take_profit_rate: float,
     start_date: str,
     end_date: str,
+    price_data=None,
 ):
-    price_data = fetch_real_price_series(symbol, start_date, end_date)
+    if price_data is None:
+        price_data = fetch_real_price_series(symbol, start_date, end_date)
 
     closes = [item["close"] for item in price_data]
 
@@ -387,7 +396,6 @@ def run_strategy_backtest(
 
         if buy_signal:
             position_budget = cash * position_fraction
-
             buy_shares = int(position_budget // (close * 100)) * 100
             total_cost = buy_shares * close * (1 + FEE_RATE)
 
@@ -530,3 +538,52 @@ def run_backtest(request: BacktestRequest):
         start_date=start_date,
         end_date=end_date,
     )
+
+
+@app.post("/compare")
+def compare_strategies(request: BacktestRequest):
+    symbol = request.symbol.strip()
+    capital = clean_capital(request.capital)
+    position_fraction = parse_position_size(request.positionSize)
+    stop_loss_rate = parse_percent(request.stopLoss, 0.08)
+    take_profit_rate = parse_percent(request.takeProfit, 0.15)
+    start_date, end_date = normalize_date_range(request.startDate, request.endDate)
+
+    if not symbol:
+        raise HTTPException(status_code=400, detail="請輸入股票代號，例如 2330")
+
+    if capital <= 0:
+        raise HTTPException(
+            status_code=400,
+            detail="請輸入正確的初始資金，例如 1000000",
+        )
+
+    price_data = fetch_real_price_series(symbol, start_date, end_date)
+
+    comparison_results = []
+
+    for strategy_name in STRATEGIES:
+        backtest = run_strategy_backtest(
+            symbol=symbol,
+            strategy_name=strategy_name,
+            initial_capital=capital,
+            position_fraction=position_fraction,
+            stop_loss_rate=stop_loss_rate,
+            take_profit_rate=take_profit_rate,
+            start_date=start_date,
+            end_date=end_date,
+            price_data=price_data,
+        )
+
+        comparison_results.append(backtest["result"])
+
+    comparison_results = sorted(
+        comparison_results,
+        key=lambda item: item["annualReturn"],
+        reverse=True,
+    )
+
+    return {
+        "symbol": symbol,
+        "results": comparison_results,
+    }

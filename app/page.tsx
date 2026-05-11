@@ -7,6 +7,7 @@ import EquityCurveChart from "./components/EquityCurveChart";
 import MetricCard from "./components/MetricCard";
 import RecentResults from "./components/RecentResults";
 import ResultSummary from "./components/ResultSummary";
+import StrategyComparison from "./components/StrategyComparison";
 import TradeTable from "./components/TradeTable";
 
 import type { BacktestResult, EquityPoint, TradeRecord } from "./types";
@@ -75,6 +76,8 @@ export default function Home() {
   const [startDate, setStartDate] = useState("2023-01-01");
   const [endDate, setEndDate] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const [isComparing, setIsComparing] = useState(false);
+  const [compareResults, setCompareResults] = useState<BacktestResult[]>([]);
 
   const [result, setResult] = useState<BacktestResult>({
     symbol: "2330",
@@ -165,6 +168,52 @@ export default function Home() {
     }
   }
 
+  async function compareStrategies() {
+    if (!symbol.trim()) {
+      alert("請先輸入股票代號，例如 2330");
+      return;
+    }
+
+    setIsComparing(true);
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 60000);
+
+    try {
+      const response = await fetch("/api/compare", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          symbol,
+          strategy,
+          capital,
+          positionSize,
+          stopLoss,
+          takeProfit,
+          startDate,
+          endDate,
+        }),
+        signal: controller.signal,
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        alert(data.error || "策略比較失敗");
+        return;
+      }
+
+      setCompareResults(data.results);
+    } catch {
+      alert("策略比較逾時或無法連線到後端，請確認 FastAPI port 8000 有啟動");
+    } finally {
+      clearTimeout(timeoutId);
+      setIsComparing(false);
+    }
+  }
+
   return (
     <main className="min-h-screen bg-slate-100 p-6">
       <div className="mx-auto max-w-6xl space-y-6">
@@ -191,8 +240,12 @@ export default function Home() {
               {isLoading ? "回測中..." : "開始回測"}
             </button>
 
-            <button className="rounded-2xl border border-slate-300 px-6 py-3 font-medium text-slate-700">
-              查看策略庫
+            <button
+              onClick={compareStrategies}
+              disabled={isComparing}
+              className="rounded-2xl border border-slate-300 px-6 py-3 font-medium text-slate-700 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {isComparing ? "比較中..." : "比較所有策略"}
             </button>
           </div>
         </section>
@@ -237,6 +290,8 @@ export default function Home() {
 
         <TradeTable tradeRecords={tradeRecords} />
 
+        <StrategyComparison results={compareResults} />
+
         <RecentResults recentResults={recentResults} />
 
         <section className="rounded-3xl bg-white p-6 shadow-sm">
@@ -255,12 +310,14 @@ export default function Home() {
 
             <div className="rounded-2xl bg-green-50 p-4">
               <p className="font-medium text-green-700">第 3 階段</p>
-              <p className="mt-1 text-sm text-green-700">停損停利</p>
+              <p className="mt-1 text-sm text-green-700">
+                停損停利 / 日期區間
+              </p>
             </div>
 
             <div className="rounded-2xl bg-blue-50 p-4">
               <p className="font-medium text-blue-700">第 4 階段</p>
-              <p className="mt-1 text-sm text-blue-700">日期區間</p>
+              <p className="mt-1 text-sm text-blue-700">策略比較</p>
             </div>
           </div>
         </section>
