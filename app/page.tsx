@@ -2,14 +2,17 @@
 
 import { useState } from "react";
 
+import AdvancedMetrics from "./components/AdvancedMetrics";
 import BacktestForm from "./components/BacktestForm";
 import EquityCurveChart from "./components/EquityCurveChart";
 import MetricCard from "./components/MetricCard";
+import ParameterOptimizer from "./components/ParameterOptimizer";
 import RecentResults from "./components/RecentResults";
 import ResultSummary from "./components/ResultSummary";
 import StrategyComparison from "./components/StrategyComparison";
 import TradeTable from "./components/TradeTable";
 import WatchlistScanner from "./components/WatchlistScanner";
+import WatchlistSummary from "./components/WatchlistSummary";
 
 import type {
   BacktestResult,
@@ -86,16 +89,20 @@ export default function Home() {
   const [positionSize, setPositionSize] = useState("20%");
   const [stopLoss, setStopLoss] = useState("8%");
   const [takeProfit, setTakeProfit] = useState("15%");
-  const [startDate, setStartDate] = useState("2023-01-01");
+  const [startDate, setStartDate] = useState("2025-01-01");
   const [endDate, setEndDate] = useState("");
 
   const [isLoading, setIsLoading] = useState(false);
   const [isComparing, setIsComparing] = useState(false);
   const [isScanning, setIsScanning] = useState(false);
+  const [isOptimizing, setIsOptimizing] = useState(false);
 
   const [compareResults, setCompareResults] = useState<BacktestResult[]>([]);
   const [scanResults, setScanResults] = useState<BacktestResult[]>([]);
   const [scanErrors, setScanErrors] = useState<ScanError[]>([]);
+  const [optimizationResults, setOptimizationResults] = useState<
+    BacktestResult[]
+  >([]);
 
   const [result, setResult] = useState<BacktestResult>({
     symbol: "2330",
@@ -162,7 +169,7 @@ export default function Home() {
     setIsLoading(true);
 
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 30000);
+    const timeoutId = setTimeout(() => controller.abort(), 120000);
 
     try {
       const response = await fetch("/api/backtest", {
@@ -202,7 +209,7 @@ export default function Home() {
     setIsComparing(true);
 
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 60000);
+    const timeoutId = setTimeout(() => controller.abort(), 120000);
 
     try {
       const response = await fetch("/api/compare", {
@@ -234,7 +241,7 @@ export default function Home() {
     setIsScanning(true);
 
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 90000);
+    const timeoutId = setTimeout(() => controller.abort(), 180000);
 
     try {
       const response = await fetch("/api/scan", {
@@ -263,6 +270,43 @@ export default function Home() {
     }
   }
 
+  async function optimizeParameters() {
+    if (!symbol.trim()) {
+      alert("請先輸入股票代號，例如 2330");
+      return;
+    }
+
+    setIsOptimizing(true);
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 240000);
+
+    try {
+      const response = await fetch("/api/optimize", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(requestBody),
+        signal: controller.signal,
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        alert(data.error || "參數最佳化失敗");
+        return;
+      }
+
+      setOptimizationResults(data.results || []);
+    } catch {
+      alert("參數最佳化逾時或無法連線到後端，請確認 FastAPI port 8000 有啟動");
+    } finally {
+      clearTimeout(timeoutId);
+      setIsOptimizing(false);
+    }
+  }
+
   return (
     <main className="min-h-screen bg-slate-100 p-6">
       <div className="mx-auto max-w-6xl space-y-6">
@@ -276,18 +320,21 @@ export default function Home() {
           </h1>
 
           <p className="mt-4 max-w-2xl text-slate-600">
-            支援單一股票回測、多策略比較、觀察清單批次掃描、停損停利、日期區間、CSV 匯出、股票中文名稱與目前訊號判斷。
+            支援單一股票回測、多策略比較、觀察清單批次掃描、參數最佳化、停損停利、日期區間、CSV 匯出、股票中文名稱、ETF / 個股搜尋與觀察清單摘要。
           </p>
         </section>
 
         <section className="grid gap-4 md:grid-cols-4">
           <MetricCard label="年化報酬" value={`${result.annualReturn}%`} />
+
           <MetricCard
             label="最大回撤"
             value={`${result.maxDrawdown}%`}
             danger
           />
+
           <MetricCard label="勝率" value={`${result.winRate}%`} />
+
           <MetricCard label="交易次數" value={result.trades} />
         </section>
 
@@ -305,6 +352,7 @@ export default function Home() {
             isLoading={isLoading}
             isComparing={isComparing}
             isScanning={isScanning}
+            isOptimizing={isOptimizing}
             setSymbol={setSymbol}
             setWatchlistSymbols={setWatchlistSymbols}
             setStrategy={setStrategy}
@@ -317,6 +365,7 @@ export default function Home() {
             runBacktest={runBacktest}
             compareStrategies={compareStrategies}
             scanWatchlist={scanWatchlist}
+            optimizeParameters={optimizeParameters}
           />
 
           <ResultSummary result={result} />
@@ -324,11 +373,17 @@ export default function Home() {
 
         <EquityCurveChart equityCurve={equityCurve} />
 
+        <AdvancedMetrics result={result} />
+
         <TradeTable tradeRecords={tradeRecords} />
 
         <StrategyComparison results={compareResults} />
 
+        <WatchlistSummary results={scanResults} />
+
         <WatchlistScanner results={scanResults} errors={scanErrors} />
+
+        <ParameterOptimizer results={optimizationResults} />
 
         <RecentResults recentResults={recentResults} />
 
@@ -351,9 +406,11 @@ export default function Home() {
               <p className="mt-1 text-sm text-green-700">觀察清單掃描</p>
             </div>
 
-            <div className="rounded-2xl bg-blue-50 p-4">
-              <p className="font-medium text-blue-700">第 4 階段</p>
-              <p className="mt-1 text-sm text-blue-700">中文名稱 / CSV</p>
+            <div className="rounded-2xl bg-purple-50 p-4">
+              <p className="font-medium text-purple-700">第 4 階段</p>
+              <p className="mt-1 text-sm text-purple-700">
+                台股商品庫 / 觀察清單摘要
+              </p>
             </div>
           </div>
         </section>
