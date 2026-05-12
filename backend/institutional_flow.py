@@ -998,3 +998,182 @@ def build_flow_context_for_price_dates(
             }
 
     return context
+# ============================================================
+# Hybrid latest-first institutional flow mode
+# Priority:
+# 1. Latest available TWSE T86 official daily data
+# 2. FinMind range data for historical backtest context
+# 3. Neutral fallback if both fail
+#
+# This avoids slow TWSE daily-by-daily fetching.
+# Only ONE latest TWSE request + ONE FinMind range request.
+# ============================================================
+
+def get_latest_twse_record_for_symbol(
+    symbol: str,
+    end_date: str,
+    lookback_days: int = 5,
+):
+    clean_symbol = normalize_symbol(symbol)
+    clean_end = normalize_date_text(end_date)
+
+    try:
+        used_date, flow_map = get_latest_available_daily_flow_map(
+            clean_end,
+            lookback_days=lookback_days,
+            force_refresh=False,
+        )
+
+        record = flow_map.get(clean_symbol)
+
+        if not record:
+            return None, f"TWSE 最新資料有抓到 {used_date}，但找不到 {clean_symbol}"
+
+        return {
+            **record,
+            "date": used_date,
+            "sourceMode": "TWSE_LATEST_PRIORITY",
+            "reason": (
+                record.get("reason", "")
+                + "｜最新優先模式：使用 TWSE T86 最近可用官方法人資料。"
+            ),
+        }, ""
+
+    except Exception as error:
+        return None, f"TWSE 最新資料讀取失敗：{error}"
+
+
+def build_finmind_range_context_for_dates(
+    symbol: str,
+    unique_dates,
+):
+    clean_symbol = normalize_symbol(symbol)
+
+    if not unique_dates:
+        return {}, "沒有日期可查詢"
+
+    start_date = unique_dates[0]
+    end_date = unique_dates[-1]
+
+    try:
+        payload = fetch_finmind_institutional_range(
+            symbol=clean_symbol,
+            start_date=start_date,
+            end_date=end_date,
+            force_refresh=False,
+        )
+
+        flow_by_date = parse_finmind_institutional_payload(
+            symbol=clean_symbol,
+            payload=payload,
+        )
+
+    except Exception as error:
+        return {}, f"FinMind 區間法人資料讀取失敗：{error}"
+
+    context = {}
+    last_available_record = None
+
+    for current_date in unique_dates:
+        record = flow_by_date.get(current_date)
+
+        if record:
+            last_available_record = record
+            context[current_date] = {
+                **record,
+                "sourceMode": "FINMIND_RANGE",
+                "reason": (
+                    record.get("reason", "")
+                    + "｜歷史區間資料來源：FinMind。"
+                ),
+            }
+        elif last_available_record:
+            context[current_date] = {
+                **last_available_record,
+                "date": current_date,
+                "sourceMode": "FINMIND_RANGE_CARRY_FORWARD",
+                "reason": (
+                    last_available_record.get("reason", "")
+                    + "｜FinMind 區間模式：當日無資料，沿用最近一筆法人資料。"
+                ),
+            }
+        else:
+            context[current_date] = neutral_flow_record(clean_symbol, current_date)
+
+    return context, ""
+
+
+def build_flow_context_for_price_dates(
+    symbol: str,
+    price_dates,
+    max_fetch_days: int = DEFAULT_MAX_FETCH_DAYS,
+    lookback_days: int = DEFAULT_LOOKBACK_DAYS,
+):
+    clean_symbol = normalize_symbol(symbol)
+
+    unique_dates = []
+
+    for item in price_dates:
+        clean_date = normalize_date_text(item)
+
+        if clean_date and clean_date not in unique_dates:
+            unique_dates.append(clean_date)
+
+    if not unique_dates:
+        return {}
+
+    if max_fetch_days > 0:
+        unique_dates = unique_dates[-max_fetch_days:]
+
+    latest_price_date = unique_dates[-1]
+
+    latest_twse_record, twse_error = get_latest_twse_record_for_symbol(
+        symbol=clean_symbol,
+        end_date=latest_price_date,
+        lookback_days=5,
+    )
+
+    finmind_context, finmind_error = build_finmind_range_context_for_dates(
+        symbol=clean_symbol,
+        unique_dates=unique_dates,
+    )
+
+    context = {}
+
+    for current_date in unique_dates:
+        finmind_record = finmind_context.get(current_date)
+
+        if finmind_record and finmind_record.get("hasFlowData"):
+            context[current_date] = finmind_record
+        elif latest_twse_record:
+            context[current_date] = {
+                **latest_twse_record,
+                "date": current_date,
+                "sourceMode": "TWSE_LATEST_CARRY_FORWARD",
+                "reason": (
+                    latest_twse_record.get("reason", "")
+                    + "｜因歷史區間資料不足，暫以 TWSE 最新法人資料作為籌碼濾網。"
+                ),
+            }
+        else:
+            context[current_date] = {
+                **neutral_flow_record(clean_symbol, current_date),
+                "reason": (
+                    "法人資料讀取失敗，回測先以技術訊號為主。"
+                    f"｜TWSE：{twse_error or '無錯誤'}"
+                    f"｜FinMind：{finmind_error or '無錯誤'}"
+                ),
+            }
+
+    if latest_twse_record:
+        context[latest_price_date] = {
+            **latest_twse_record,
+            "date": latest_price_date,
+            "sourceMode": "TWSE_LATEST_PRIORITY",
+            "reason": (
+                latest_twse_record.get("reason", "")
+                + "｜最新一日採用 TWSE 官方最新資料優先。"
+            ),
+        }
+
+    return context
