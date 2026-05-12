@@ -51,6 +51,25 @@ type ScreenerResponse = {
   error?: string;
 };
 
+type WatchItem = {
+  id: string;
+  symbol: string;
+  name: string;
+  strategy: string;
+  currentPrice: string;
+  entryPrice: string;
+  stopLossPrice: string;
+  targetPrice: string;
+  positionAmount: string;
+  note: string;
+  tags: string;
+  active: boolean;
+  updatedAt: string;
+  quoteDate?: string;
+};
+
+const WATCHLIST_STORAGE_KEY = "stock-backtest-web-watchlist-alerts-v3";
+
 const defaultSymbols =
   "2330, 2454, 2317, 2382, 2308, 2357, 2881, 2882, 2603, 2609, 0050, 006208, 00878, 00919";
 
@@ -63,6 +82,16 @@ function pastDateInputValue(days: number) {
   const date = new Date();
   date.setDate(date.getDate() - days);
   return date.toISOString().slice(0, 10);
+}
+
+function nowText() {
+  return new Date().toLocaleString("zh-TW", {
+    hour12: false,
+  });
+}
+
+function createWatchId() {
+  return `watch-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
 function formatPrice(value: number | null | undefined) {
@@ -98,6 +127,148 @@ function lotClass(value: number) {
   if (value > 0) return "text-red-600";
   if (value < 0) return "text-green-600";
   return "text-slate-500";
+}
+
+function roundTaiwanPrice(value: number) {
+  if (!Number.isFinite(value) || value <= 0) return "";
+
+  if (value < 50) return value.toFixed(2);
+  if (value < 500) return value.toFixed(1);
+
+  return Math.round(value).toString();
+}
+
+function getSuggestedLevels(price: number, item: ScreenerCandidate) {
+  if (!Number.isFinite(price) || price <= 0) {
+    return {
+      entryPrice: "",
+      stopLossPrice: "",
+      targetPrice: "",
+      logic: "尚未有現價，無法自動計算。",
+    };
+  }
+
+  let entryMultiplier = 0.98;
+  let stopMultiplier = 0.93;
+  let targetMultiplier = 1.12;
+  let logic = "法人 / 趨勢候選：回檔 2% 作為買點，停損約 7%，停利約 12%。";
+
+  if (item.securityType?.includes("ETF") || item.symbol.startsWith("00")) {
+    entryMultiplier = 0.97;
+    stopMultiplier = 0.9;
+    targetMultiplier = 1.1;
+    logic = "ETF 候選：回檔 3% 分批，停損約 10%，停利約 10%。";
+  } else if (item.breakout20) {
+    entryMultiplier = 0.995;
+    stopMultiplier = 0.94;
+    targetMultiplier = 1.15;
+    logic = "突破候選：買點接近現價，停損約 6%，停利約 15%。";
+  } else if (item.rsiRebound) {
+    entryMultiplier = 0.96;
+    stopMultiplier = 0.91;
+    targetMultiplier = 1.1;
+    logic = "RSI 低檔轉強候選：回檔 4% 作為買點，停損約 9%，停利約 10%。";
+  } else if (item.nearMa20) {
+    entryMultiplier = 0.985;
+    stopMultiplier = 0.93;
+    targetMultiplier = 1.12;
+    logic = "接近月線候選：買點略低於現價，停損約 7%，停利約 12%。";
+  }
+
+  return {
+    entryPrice: roundTaiwanPrice(price * entryMultiplier),
+    stopLossPrice: roundTaiwanPrice(price * stopMultiplier),
+    targetPrice: roundTaiwanPrice(price * targetMultiplier),
+    logic,
+  };
+}
+
+function getCandidateStrategy(item: ScreenerCandidate) {
+  if (item.breakout20 && item.flowScoreAvg >= 60) {
+    return "三大法人合計買超 + 突破整理";
+  }
+
+  if (item.flowScoreAvg >= 60 && item.aboveMa20) {
+    return "外資投信同步買超 + MA20 趨勢過濾";
+  }
+
+  if (item.rsiRebound) {
+    return "RSI 低檔反彈策略";
+  }
+
+  if (item.securityType?.includes("ETF") || item.symbol.startsWith("00")) {
+    return "ETF 回檔分批加碼";
+  }
+
+  return "MA20 / MA60 黃金交叉";
+}
+
+function readWatchlist(): WatchItem[] {
+  try {
+    const saved = localStorage.getItem(WATCHLIST_STORAGE_KEY);
+
+    if (!saved) return [];
+
+    const parsed = JSON.parse(saved);
+
+    if (Array.isArray(parsed)) return parsed;
+
+    return [];
+  } catch {
+    return [];
+  }
+}
+
+function writeWatchlist(items: WatchItem[]) {
+  localStorage.setItem(WATCHLIST_STORAGE_KEY, JSON.stringify(items));
+}
+
+function addCandidateToWatchlist(item: ScreenerCandidate) {
+  const existing = readWatchlist();
+  const cleanSymbol = item.symbol.trim();
+  const oldItem = existing.find((row) => row.symbol === cleanSymbol);
+  const suggestion = getSuggestedLevels(item.lastClose, item);
+  const strategy = getCandidateStrategy(item);
+
+  const watchItem: WatchItem = {
+    id: oldItem?.id || createWatchId(),
+    symbol: cleanSymbol,
+    name: item.stockName || cleanSymbol,
+    strategy,
+    currentPrice: String(item.lastClose || ""),
+    entryPrice: oldItem?.entryPrice || suggestion.entryPrice,
+    stopLossPrice: oldItem?.stopLossPrice || suggestion.stopLossPrice,
+    targetPrice: oldItem?.targetPrice || suggestion.targetPrice,
+    positionAmount: oldItem?.positionAmount || "50000",
+    note:
+      oldItem?.note ||
+      [
+        `由 Screener 一鍵加入。`,
+        `分數 ${item.score}，訊號：${item.signal}。`,
+        `法人：${item.flowSignal}，平均分數 ${item.flowScoreAvg}。`,
+        `系統預設：${suggestion.logic}`,
+      ].join(" "),
+    tags: [
+      ...item.tags,
+      `Screener ${item.score}`,
+      item.flowScoreAvg >= 60 ? "法人偏多" : "",
+      item.breakout20 ? "突破" : "",
+      item.rsiRebound ? "RSI轉強" : "",
+    ]
+      .filter(Boolean)
+      .join(", "),
+    active: true,
+    updatedAt: nowText(),
+    quoteDate: item.lastDate,
+  };
+
+  const nextItems = oldItem
+    ? existing.map((row) => (row.symbol === cleanSymbol ? watchItem : row))
+    : [watchItem, ...existing];
+
+  writeWatchlist(nextItems);
+
+  alert(`${item.symbol} ${item.stockName} 已加入 Watchlist`);
 }
 
 export default function ScreenerLab() {
@@ -183,11 +354,14 @@ export default function ScreenerLab() {
 
               <h1 className="mt-6 max-w-3xl text-4xl font-black leading-tight tracking-tight md:text-5xl">
                 盤後選股器
-                <span className="block text-red-300">技術面 × 法人籌碼</span>
+                <span className="block text-red-300">
+                  技術面 × 法人籌碼 × 一鍵加入 Watchlist
+                </span>
               </h1>
 
               <p className="mt-5 max-w-2xl text-sm leading-7 text-slate-300 md:text-base">
                 掃描股票池，找出站上 MA20、接近月線、20 日突破、RSI 低檔轉強與法人籌碼偏多的候選股。
+                現在可以直接把候選股加入 Watchlist，並自動帶入建議買點、停損與停利。
               </p>
 
               <div className="mt-6 flex flex-wrap gap-3">
@@ -210,7 +384,7 @@ export default function ScreenerLab() {
                   href="/watchlist-lab"
                   className="rounded-2xl border border-white/15 bg-white/10 px-5 py-3 text-sm font-bold text-white backdrop-blur transition hover:-translate-y-0.5 hover:bg-white/15"
                 >
-                  Watchlist
+                  打開 Watchlist
                 </a>
               </div>
             </div>
@@ -340,7 +514,6 @@ export default function ScreenerLab() {
 
 function CandidateCard({ item }: { item: ScreenerCandidate }) {
   const flowHref = `/flow-lab?symbols=${encodeURIComponent(item.symbol)}`;
-  const watchHref = `/watchlist-lab`;
 
   return (
     <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
@@ -376,18 +549,25 @@ function CandidateCard({ item }: { item: ScreenerCandidate }) {
         </div>
 
         <div className="flex flex-wrap gap-2">
+          <button
+            onClick={() => addCandidateToWatchlist(item)}
+            className="rounded-2xl bg-red-600 px-4 py-2 text-sm font-bold text-white transition hover:bg-red-700"
+          >
+            加入 Watchlist
+          </button>
+
+          <a
+            href="/watchlist-lab"
+            className="rounded-2xl border border-red-200 bg-red-50 px-4 py-2 text-sm font-bold text-red-700 transition hover:bg-red-100"
+          >
+            打開 Watchlist
+          </a>
+
           <a
             href={flowHref}
             className="rounded-2xl bg-slate-900 px-4 py-2 text-sm font-bold text-white transition hover:bg-slate-700"
           >
             法人籌碼
-          </a>
-
-          <a
-            href={watchHref}
-            className="rounded-2xl border border-slate-300 bg-white px-4 py-2 text-sm font-bold text-slate-700 transition hover:bg-slate-50"
-          >
-            加到 Watchlist
           </a>
         </div>
       </div>
@@ -402,10 +582,7 @@ function CandidateCard({ item }: { item: ScreenerCandidate }) {
       </div>
 
       <div className="mt-4 grid gap-3 md:grid-cols-3">
-        <Metric
-          label="法人分數"
-          value={`${item.flowScoreAvg}`}
-        />
+        <Metric label="法人分數" value={`${item.flowScoreAvg}`} />
         <Metric
           label="外資合計"
           value={`${formatNumber(item.foreignNetLotsSum)} 張`}

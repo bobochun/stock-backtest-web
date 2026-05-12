@@ -21,11 +21,23 @@ STRATEGIES = [
     "Buy and Hold 長期持有",
     "ETF 定期定額策略",
     "ETF 回檔分批加碼",
+    "股債平衡再平衡策略",
     "高殖利率低波動策略",
     "營收創高成長策略",
     "低本益比轉強策略",
     "移動停損保護策略",
     "最大回撤限制策略",
+]
+
+
+FLOW_STRATEGY_NAMES = [
+    "外資投信同步買超 + MA20 趨勢過濾",
+    "投信連買動能 + 月線防守",
+    "外資回補反彈 + RSI 低檔轉強",
+    "三大法人合計買超 + 突破整理",
+    "外資投信同步賣超風險過濾",
+    "外資連買 3 日 + 價格站上季線",
+    "投信作帳季策略",
 ]
 
 
@@ -66,16 +78,32 @@ def canonical_strategy(strategy_name: str) -> str:
     return mapping.get(name, "MA_CROSS")
 
 
+def is_flow_strategy(strategy_name: str) -> bool:
+    return str(strategy_name or "").strip() in FLOW_STRATEGY_NAMES
+
+
+def normalize_date_key(value) -> str:
+    text = str(value or "").strip().replace("-", "").replace("/", "")
+
+    if len(text) >= 8:
+        return text[:8]
+
+    return text
+
+
 def value_at(series, index):
     if index < 0 or index >= len(series):
         return None
+
     return series[index]
 
 
 def rolling_mean(values, index, window):
     if index + 1 < window:
         return None
+
     window_values = values[index + 1 - window : index + 1]
+
     return sum(window_values) / window
 
 
@@ -83,10 +111,12 @@ def rolling_high(values, index, window, exclude_current=True):
     if exclude_current:
         if index < window:
             return None
+
         window_values = values[index - window : index]
     else:
         if index + 1 < window:
             return None
+
         window_values = values[index + 1 - window : index + 1]
 
     return max(window_values) if window_values else None
@@ -96,10 +126,12 @@ def rolling_low(values, index, window, exclude_current=True):
     if exclude_current:
         if index < window:
             return None
+
         window_values = values[index - window : index]
     else:
         if index + 1 < window:
             return None
+
         window_values = values[index + 1 - window : index + 1]
 
     return min(window_values) if window_values else None
@@ -113,14 +145,14 @@ def calculate_rsi(values, index, period=14):
     losses = []
 
     for i in range(index - period + 1, index + 1):
-      change = values[i] - values[i - 1]
+        change = values[i] - values[i - 1]
 
-      if change >= 0:
-          gains.append(change)
-          losses.append(0)
-      else:
-          gains.append(0)
-          losses.append(abs(change))
+        if change >= 0:
+            gains.append(change)
+            losses.append(0)
+        else:
+            gains.append(0)
+            losses.append(abs(change))
 
     avg_gain = sum(gains) / period
     avg_loss = sum(losses) / period
@@ -129,6 +161,7 @@ def calculate_rsi(values, index, period=14):
         return 100
 
     rs = avg_gain / avg_loss
+
     return 100 - (100 / (1 + rs))
 
 
@@ -220,14 +253,114 @@ def stop_take_profit_signal(
     return stop_loss_signal or take_profit_signal
 
 
-def get_current_signal(strategy_name: str, closes, fast_ma, slow_ma, high_window):
+def neutral_flow_record():
+    return {
+        "hasFlowData": False,
+        "score": 50,
+        "foreignNetLots": 0,
+        "trustNetLots": 0,
+        "dealerNetLots": 0,
+        "totalNetLots": 0,
+        "signal": "無法人資料",
+        "strategies": [],
+        "reason": "沒有法人資料，僅使用技術訊號。",
+    }
+
+
+def get_flow_record_for_index(
+    i: int,
+    price_dates=None,
+    flow_context=None,
+):
+    if not flow_context or price_dates is None:
+        return neutral_flow_record()
+
+    if i < 0 or i >= len(price_dates):
+        return neutral_flow_record()
+
+    date_key = normalize_date_key(price_dates[i])
+
+    return flow_context.get(date_key) or neutral_flow_record()
+
+
+def flow_score(record) -> float:
+    try:
+        return float(record.get("score", 50))
+    except Exception:
+        return 50
+
+
+def foreign_lots(record) -> float:
+    try:
+        return float(record.get("foreignNetLots", 0))
+    except Exception:
+        return 0
+
+
+def trust_lots(record) -> float:
+    try:
+        return float(record.get("trustNetLots", 0))
+    except Exception:
+        return 0
+
+
+def total_lots(record) -> float:
+    try:
+        return float(record.get("totalNetLots", 0))
+    except Exception:
+        return 0
+
+
+def has_flow(record) -> bool:
+    return bool(record.get("hasFlowData"))
+
+
+def flow_positive(record, min_score=60) -> bool:
+    return has_flow(record) and flow_score(record) >= min_score
+
+
+def flow_strong(record) -> bool:
+    return has_flow(record) and flow_score(record) >= 75
+
+
+def flow_negative(record) -> bool:
+    return has_flow(record) and flow_score(record) <= 35
+
+
+def foreign_buy(record, min_lots=0) -> bool:
+    return has_flow(record) and foreign_lots(record) >= min_lots
+
+
+def trust_buy(record, min_lots=0) -> bool:
+    return has_flow(record) and trust_lots(record) >= min_lots
+
+
+def sync_foreign_trust_buy(record, min_foreign_lots=0, min_trust_lots=0) -> bool:
+    return foreign_buy(record, min_foreign_lots) and trust_buy(record, min_trust_lots)
+
+
+def sync_foreign_trust_sell(record, max_foreign_lots=-1, max_trust_lots=-1) -> bool:
+    return (
+        has_flow(record)
+        and foreign_lots(record) <= max_foreign_lots
+        and trust_lots(record) <= max_trust_lots
+    )
+
+
+def get_current_signal(
+    strategy_name: str,
+    closes,
+    fast_ma,
+    slow_ma,
+    high_window,
+    latest_flow_record=None,
+):
     strategy = canonical_strategy(strategy_name)
 
     close = closes[-1]
     previous_close = closes[-2] if len(closes) >= 2 else close
 
     ma5 = rolling_mean(closes, len(closes) - 1, 5)
-    ma10 = rolling_mean(closes, len(closes) - 1, 10)
     ma20 = rolling_mean(closes, len(closes) - 1, 20)
     ma60 = rolling_mean(closes, len(closes) - 1, 60)
 
@@ -237,6 +370,40 @@ def get_current_signal(strategy_name: str, closes, fast_ma, slow_ma, high_window
     rsi = calculate_rsi(closes, len(closes) - 1)
     basis, upper, lower = calculate_bollinger(closes, len(closes) - 1)
     k, d = calculate_kd(closes, len(closes) - 1)
+
+    flow_record = latest_flow_record or neutral_flow_record()
+
+    if strategy in ["FLOW_SYNC_MA20", "TRUST_MA20", "FOREIGN_SEASON_TREND", "TRUST_WINDOW_DRESSING"]:
+        if flow_strong(flow_record) and ma20 is not None and close > ma20:
+            return "法人籌碼偏強且站上月線"
+        if flow_positive(flow_record) and ma20 is not None and close > ma20:
+            return "法人籌碼偏多"
+        if flow_negative(flow_record):
+            return "法人籌碼偏弱"
+        return "法人籌碼觀察"
+
+    if strategy == "FOREIGN_RSI_REBOUND":
+        if foreign_buy(flow_record, 1000) and rsi is not None and rsi < 55:
+            return "外資回補且 RSI 轉強"
+        if rsi is not None and rsi < 35:
+            return "RSI 低檔"
+        if flow_negative(flow_record):
+            return "法人籌碼偏弱"
+        return "外資回補觀察"
+
+    if strategy == "FLOW_BREAKOUT":
+        if flow_positive(flow_record) and high20 is not None and close >= high20 * 0.97:
+            return "法人偏多且接近突破"
+        if high20 is not None and close > high20:
+            return "已突破區間新高"
+        return "等待法人與突破共振"
+
+    if strategy == "FLOW_RISK_FILTER":
+        if sync_foreign_trust_sell(flow_record, -1000, -300):
+            return "法人同步賣超風險"
+        if ma20 is not None and close > ma20:
+            return "風險過濾通過"
+        return "風險過濾觀察"
 
     if strategy in ["MA_CROSS", "WEEKLY_TREND"]:
         if ma20 is not None and ma60 is not None and ma20 > ma60 and close > ma20:
@@ -250,7 +417,7 @@ def get_current_signal(strategy_name: str, closes, fast_ma, slow_ma, high_window
             return "短線轉強"
         return "短線觀望"
 
-    if strategy in ["BREAKOUT_20", "NEW_HIGH_20", "FLOW_BREAKOUT", "GROWTH_BREAKOUT"]:
+    if strategy in ["BREAKOUT_20", "NEW_HIGH_20", "GROWTH_BREAKOUT"]:
         if high20 is not None and close > high20:
             return "已突破區間新高"
         if high20 is not None and close >= high20 * 0.97:
@@ -264,7 +431,7 @@ def get_current_signal(strategy_name: str, closes, fast_ma, slow_ma, high_window
             return "接近突破"
         return "尚未突破"
 
-    if strategy in ["RSI_REBOUND", "FOREIGN_RSI_REBOUND"]:
+    if strategy == "RSI_REBOUND":
         if rsi is not None and rsi < 35:
             return "RSI 低檔"
         if rsi is not None and 35 <= rsi <= 55 and close > previous_close:
@@ -294,17 +461,7 @@ def get_current_signal(strategy_name: str, closes, fast_ma, slow_ma, high_window
             return "乖離修復"
         return "修復觀察"
 
-    if strategy in ["FLOW_SYNC_MA20", "TRUST_MA20", "FOREIGN_SEASON_TREND", "TRUST_WINDOW_DRESSING"]:
-        if ma20 is not None and close > ma20:
-            return "站上月線"
-        return "尚未站上月線"
-
-    if strategy == "FLOW_RISK_FILTER":
-        if ma20 is not None and close < ma20:
-            return "跌破月線"
-        return "風險過濾通過"
-
-    if strategy in ["BUY_AND_HOLD", "LOW_VOL_DIVIDEND"]:
+    if strategy == "BUY_AND_HOLD":
         return "長期持有"
 
     if strategy == "ETF_PULLBACK":
@@ -322,6 +479,9 @@ def get_current_signal(strategy_name: str, closes, fast_ma, slow_ma, high_window
             return "風控續抱"
         return "風控減碼"
 
+    if strategy == "LOW_VOL_DIVIDEND":
+        return "低波動配置"
+
     return "觀望"
 
 
@@ -336,6 +496,8 @@ def get_signals(
     entry_price,
     stop_loss_rate: float,
     take_profit_rate: float,
+    price_dates=None,
+    flow_context=None,
 ):
     strategy = canonical_strategy(strategy_name)
 
@@ -352,14 +514,12 @@ def get_signals(
 
     ma5 = rolling_mean(closes, i, 5)
     prev_ma5 = rolling_mean(closes, i - 1, 5)
-    ma10 = rolling_mean(closes, i, 10)
     ma20 = rolling_mean(closes, i, 20)
     prev_ma20 = rolling_mean(closes, i - 1, 20)
     ma60 = rolling_mean(closes, i, 60)
     prev_ma60 = rolling_mean(closes, i - 1, 60)
 
     high20 = rolling_high(closes, i, 20)
-    high60 = rolling_high(closes, i, 60)
 
     rsi = calculate_rsi(closes, i)
     prev_rsi = calculate_rsi(closes, i - 1)
@@ -369,6 +529,12 @@ def get_signals(
 
     k, d = calculate_kd(closes, i)
     prev_k, prev_d = calculate_kd(closes, i - 1)
+
+    flow_record = get_flow_record_for_index(
+        i=i,
+        price_dates=price_dates,
+        flow_context=flow_context,
+    )
 
     buy_signal = False
     sell_signal = False
@@ -482,45 +648,103 @@ def get_signals(
             or (entry_price is not None and close < entry_price * 0.93)
         )
 
-    elif strategy in ["FLOW_SYNC_MA20", "TRUST_MA20", "FOREIGN_SEASON_TREND", "TRUST_WINDOW_DRESSING"]:
+    elif strategy == "FLOW_SYNC_MA20":
         buy_signal = (
             shares == 0
-            and prev_ma20 is not None
+            and sync_foreign_trust_buy(flow_record, min_foreign_lots=0, min_trust_lots=0)
+            and flow_score(flow_record) >= 60
             and ma20 is not None
-            and previous_close <= prev_ma20
             and close > ma20
         )
-        sell_signal = shares > 0 and ma20 is not None and close < ma20
+        sell_signal = shares > 0 and (
+            sync_foreign_trust_sell(flow_record, max_foreign_lots=-500, max_trust_lots=-100)
+            or flow_negative(flow_record)
+            or (ma20 is not None and close < ma20)
+        )
+
+    elif strategy == "TRUST_MA20":
+        buy_signal = (
+            shares == 0
+            and trust_buy(flow_record, min_lots=0)
+            and flow_score(flow_record) >= 55
+            and ma20 is not None
+            and close > ma20
+        )
+        sell_signal = shares > 0 and (
+            (has_flow(flow_record) and trust_lots(flow_record) < 0)
+            or (ma20 is not None and close < ma20)
+        )
 
     elif strategy == "FOREIGN_RSI_REBOUND":
         buy_signal = (
             shares == 0
+            and foreign_buy(flow_record, min_lots=0)
             and prev_rsi is not None
             and rsi is not None
-            and prev_rsi < 40
+            and prev_rsi < 45
             and rsi >= 40
             and close > previous_close
         )
         sell_signal = shares > 0 and (
-            (rsi is not None and rsi > 72)
+            (has_flow(flow_record) and foreign_lots(flow_record) < 0)
+            or (rsi is not None and rsi > 72)
             or (ma20 is not None and close < ma20)
         )
 
     elif strategy == "FLOW_BREAKOUT":
-        buy_signal = shares == 0 and high20 is not None and close > high20
-        sell_signal = shares > 0 and ma20 is not None and close < ma20
+        buy_signal = (
+            shares == 0
+            and flow_positive(flow_record, min_score=60)
+            and total_lots(flow_record) > 0
+            and high20 is not None
+            and close > high20
+        )
+        sell_signal = shares > 0 and (
+            flow_negative(flow_record)
+            or (ma20 is not None and close < ma20)
+        )
 
     elif strategy == "FLOW_RISK_FILTER":
         buy_signal = (
             shares == 0
+            and not sync_foreign_trust_sell(flow_record, max_foreign_lots=-500, max_trust_lots=-100)
+            and not flow_negative(flow_record)
             and ma20 is not None
             and ma60 is not None
             and close > ma20
             and ma20 > ma60
         )
         sell_signal = shares > 0 and (
-            (ma20 is not None and close < ma20)
+            sync_foreign_trust_sell(flow_record, max_foreign_lots=-500, max_trust_lots=-100)
+            or flow_negative(flow_record)
+            or (ma20 is not None and close < ma20)
             or (ma60 is not None and close < ma60)
+        )
+
+    elif strategy == "FOREIGN_SEASON_TREND":
+        buy_signal = (
+            shares == 0
+            and foreign_buy(flow_record, min_lots=0)
+            and flow_score(flow_record) >= 55
+            and ma60 is not None
+            and close > ma60
+        )
+        sell_signal = shares > 0 and (
+            (has_flow(flow_record) and foreign_lots(flow_record) < 0)
+            or (ma60 is not None and close < ma60)
+        )
+
+    elif strategy == "TRUST_WINDOW_DRESSING":
+        buy_signal = (
+            shares == 0
+            and trust_buy(flow_record, min_lots=0)
+            and flow_score(flow_record) >= 55
+            and ma20 is not None
+            and close > ma20
+        )
+        sell_signal = shares > 0 and (
+            (has_flow(flow_record) and trust_lots(flow_record) < 0)
+            or (ma20 is not None and close < ma20)
         )
 
     elif strategy == "BUY_AND_HOLD":
@@ -559,7 +783,13 @@ def get_signals(
         sell_signal = shares > 0 and ma20 is not None and close < ma20
 
     elif strategy == "DRAWDOWN_GUARD":
-        buy_signal = shares == 0 and ma20 is not None and ma60 is not None and close > ma20 and ma20 > ma60
+        buy_signal = (
+            shares == 0
+            and ma20 is not None
+            and ma60 is not None
+            and close > ma20
+            and ma20 > ma60
+        )
         sell_signal = shares > 0 and ma60 is not None and close < ma60
 
     if stop_take_profit_signal(
@@ -584,12 +814,19 @@ def generate_optimization_grid(strategy_name: str):
     if strategy in ["FAST_MA_CROSS"]:
         ma_pairs = [(5, 20), (8, 24), (10, 30)]
         breakout_candidates = [20]
+
     elif strategy in ["BREAKOUT_20", "NEW_HIGH_20", "FLOW_BREAKOUT", "GROWTH_BREAKOUT"]:
         ma_pairs = [(10, 30), (20, 60)]
         breakout_candidates = [20, 40, 60]
-    elif strategy in ["WEEKLY_TREND", "FLOW_RISK_FILTER", "LOW_VOL_DIVIDEND", "DRAWDOWN_GUARD"]:
+
+    elif strategy in ["WEEKLY_TREND", "FLOW_RISK_FILTER", "LOW_VOL_DIVIDEND", "DRAWDOWN_GUARD", "FOREIGN_SEASON_TREND"]:
         ma_pairs = [(20, 60), (30, 90), (40, 120)]
         breakout_candidates = [60]
+
+    elif strategy in ["FLOW_SYNC_MA20", "TRUST_MA20", "TRUST_WINDOW_DRESSING"]:
+        ma_pairs = [(10, 30), (20, 60)]
+        breakout_candidates = [20, 60]
+
     else:
         ma_pairs = [(5, 20), (10, 30), (20, 60)]
         breakout_candidates = [20, 60]
@@ -613,3 +850,324 @@ def generate_optimization_grid(strategy_name: str):
                         )
 
     return grid
+# ============================================================
+# V3 hotfix: relaxed institutional flow strategy signals
+# Reason:
+# In fast mode, one latest institutional flow record is reused
+# across the backtest period. If flow is treated as a hard gate,
+# flow strategies may produce zero trades. This override makes
+# flow a soft filter unless the flow risk is clearly negative.
+# ============================================================
+
+try:
+    _STRICT_FLOW_GET_SIGNALS = get_signals
+except NameError:
+    _STRICT_FLOW_GET_SIGNALS = None
+
+
+def _flow_severe_risk(record) -> bool:
+    return (
+        has_flow(record)
+        and (
+            flow_score(record) <= 25
+            or sync_foreign_trust_sell(
+                record,
+                max_foreign_lots=-500,
+                max_trust_lots=-100,
+            )
+        )
+    )
+
+
+def _flow_soft_ok(record) -> bool:
+    if not has_flow(record):
+        return True
+
+    return (
+        flow_score(record) >= 35
+        or foreign_lots(record) > 0
+        or trust_lots(record) > 0
+        or total_lots(record) > 0
+    )
+
+
+def _flow_buy_boost(record) -> bool:
+    if not has_flow(record):
+        return False
+
+    return (
+        flow_score(record) >= 60
+        or foreign_lots(record) > 0
+        or trust_lots(record) > 0
+        or total_lots(record) > 500
+    )
+
+
+def get_signals(
+    strategy_name: str,
+    i: int,
+    closes,
+    fast_ma,
+    slow_ma,
+    high_window,
+    shares: int,
+    entry_price,
+    stop_loss_rate: float,
+    take_profit_rate: float,
+    price_dates=None,
+    flow_context=None,
+):
+    strategy = canonical_strategy(strategy_name)
+
+    flow_strategy_codes = {
+        "FLOW_SYNC_MA20",
+        "TRUST_MA20",
+        "FOREIGN_RSI_REBOUND",
+        "FLOW_BREAKOUT",
+        "FLOW_RISK_FILTER",
+        "FOREIGN_SEASON_TREND",
+        "TRUST_WINDOW_DRESSING",
+    }
+
+    if strategy not in flow_strategy_codes:
+        if _STRICT_FLOW_GET_SIGNALS is None:
+            return False, False
+
+        return _STRICT_FLOW_GET_SIGNALS(
+            strategy_name=strategy_name,
+            i=i,
+            closes=closes,
+            fast_ma=fast_ma,
+            slow_ma=slow_ma,
+            high_window=high_window,
+            shares=shares,
+            entry_price=entry_price,
+            stop_loss_rate=stop_loss_rate,
+            take_profit_rate=take_profit_rate,
+            price_dates=price_dates,
+            flow_context=flow_context,
+        )
+
+    close = closes[i]
+    previous_close = closes[i - 1]
+
+    ma20 = rolling_mean(closes, i, 20)
+    prev_ma20 = rolling_mean(closes, i - 1, 20)
+    ma60 = rolling_mean(closes, i, 60)
+
+    high20 = rolling_high(closes, i, 20)
+
+    rsi = calculate_rsi(closes, i)
+    prev_rsi = calculate_rsi(closes, i - 1)
+
+    flow_record = get_flow_record_for_index(
+        i=i,
+        price_dates=price_dates,
+        flow_context=flow_context,
+    )
+
+    severe_risk = _flow_severe_risk(flow_record)
+    soft_ok = _flow_soft_ok(flow_record)
+    flow_boost = _flow_buy_boost(flow_record)
+
+    trend_reclaim = (
+        prev_ma20 is not None
+        and ma20 is not None
+        and previous_close <= prev_ma20
+        and close > ma20
+    )
+
+    trend_hold = (
+        ma20 is not None
+        and close > ma20
+        and (
+            ma60 is None
+            or ma20 >= ma60 * 0.98
+        )
+    )
+
+    rsi_rebound = (
+        prev_rsi is not None
+        and rsi is not None
+        and prev_rsi < 45
+        and rsi >= 40
+        and close > previous_close
+    )
+
+    breakout = high20 is not None and close > high20
+
+    buy_signal = False
+    sell_signal = False
+
+    if strategy == "FLOW_SYNC_MA20":
+        buy_signal = (
+            shares == 0
+            and not severe_risk
+            and trend_hold
+            and (
+                trend_reclaim
+                or flow_boost
+                or close > previous_close
+            )
+        )
+
+        sell_signal = (
+            shares > 0
+            and (
+                severe_risk
+                or (ma20 is not None and close < ma20)
+            )
+        )
+
+    elif strategy == "TRUST_MA20":
+        buy_signal = (
+            shares == 0
+            and not severe_risk
+            and trend_hold
+            and (
+                trend_reclaim
+                or flow_boost
+                or soft_ok
+            )
+        )
+
+        sell_signal = (
+            shares > 0
+            and (
+                severe_risk
+                or (
+                    has_flow(flow_record)
+                    and trust_lots(flow_record) < -300
+                )
+                or (ma20 is not None and close < ma20)
+            )
+        )
+
+    elif strategy == "FOREIGN_RSI_REBOUND":
+        buy_signal = (
+            shares == 0
+            and not severe_risk
+            and (
+                rsi_rebound
+                or (
+                    rsi is not None
+                    and 35 <= rsi <= 60
+                    and close > previous_close
+                    and soft_ok
+                )
+            )
+        )
+
+        sell_signal = (
+            shares > 0
+            and (
+                severe_risk
+                or (
+                    has_flow(flow_record)
+                    and foreign_lots(flow_record) < -1000
+                )
+                or (rsi is not None and rsi > 72)
+                or (ma20 is not None and close < ma20)
+            )
+        )
+
+    elif strategy == "FLOW_BREAKOUT":
+        buy_signal = (
+            shares == 0
+            and not severe_risk
+            and (
+                breakout
+                or (
+                    flow_boost
+                    and trend_hold
+                    and close > previous_close
+                )
+            )
+        )
+
+        sell_signal = (
+            shares > 0
+            and (
+                severe_risk
+                or (ma20 is not None and close < ma20)
+            )
+        )
+
+    elif strategy == "FLOW_RISK_FILTER":
+        buy_signal = (
+            shares == 0
+            and not severe_risk
+            and ma20 is not None
+            and ma60 is not None
+            and close > ma20
+            and ma20 >= ma60 * 0.98
+        )
+
+        sell_signal = (
+            shares > 0
+            and (
+                severe_risk
+                or (ma20 is not None and close < ma20)
+                or (ma60 is not None and close < ma60)
+            )
+        )
+
+    elif strategy == "FOREIGN_SEASON_TREND":
+        buy_signal = (
+            shares == 0
+            and not severe_risk
+            and ma60 is not None
+            and close > ma60
+            and (
+                flow_boost
+                or not has_flow(flow_record)
+                or foreign_lots(flow_record) >= 0
+            )
+        )
+
+        sell_signal = (
+            shares > 0
+            and (
+                severe_risk
+                or (
+                    has_flow(flow_record)
+                    and foreign_lots(flow_record) < -1000
+                )
+                or (ma60 is not None and close < ma60)
+            )
+        )
+
+    elif strategy == "TRUST_WINDOW_DRESSING":
+        buy_signal = (
+            shares == 0
+            and not severe_risk
+            and trend_hold
+            and (
+                flow_boost
+                or not has_flow(flow_record)
+                or trust_lots(flow_record) >= 0
+            )
+        )
+
+        sell_signal = (
+            shares > 0
+            and (
+                severe_risk
+                or (
+                    has_flow(flow_record)
+                    and trust_lots(flow_record) < -300
+                )
+                or (ma20 is not None and close < ma20)
+            )
+        )
+
+    if stop_take_profit_signal(
+        shares=shares,
+        close=close,
+        entry_price=entry_price,
+        stop_loss_rate=stop_loss_rate,
+        take_profit_rate=take_profit_rate,
+    ):
+        sell_signal = True
+
+    return buy_signal, sell_signal
