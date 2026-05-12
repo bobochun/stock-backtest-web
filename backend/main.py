@@ -2357,3 +2357,647 @@ def run_screener(request: ScreenerRequest):
             "requireRsiRebound": request.requireRsiRebound,
         },
     }
+# ============================================================
+# Flow Lab latest API
+# Dedicated endpoint for /flow-lab.
+# It prioritizes latest official TWSE T86 data and avoids
+# historical carry-forward context used by backtests.
+# ============================================================
+
+try:
+    from institutional_flow import (
+        get_latest_twse_record_for_symbol as flow_lab_get_latest_twse_record,
+        build_finmind_range_context_for_dates as flow_lab_build_finmind_context,
+        normalize_date_text as flow_lab_normalize_date_text,
+    )
+except Exception:
+    from backend.institutional_flow import (
+        get_latest_twse_record_for_symbol as flow_lab_get_latest_twse_record,
+        build_finmind_range_context_for_dates as flow_lab_build_finmind_context,
+        normalize_date_text as flow_lab_normalize_date_text,
+    )
+
+
+class FlowLabLatestRequest(BaseModel):
+    symbols: str = "2330, 2454, 2317, 2382, 2308, 2881, 2603"
+    date: str = ""
+    lookbackDays: int = 5
+
+
+def parse_flow_lab_symbols(symbols_text: str):
+    return [
+        normalize_symbol_code(item.strip())
+        for item in str(symbols_text or "")
+        .replace("，", ",")
+        .replace("\n", ",")
+        .split(",")
+        if item.strip()
+    ]
+
+
+def flow_lab_finmind_fallback_record(symbol: str, end_date_text: str):
+    try:
+        end_day = date(
+            int(end_date_text[:4]),
+            int(end_date_text[4:6]),
+            int(end_date_text[6:8]),
+        )
+
+        unique_dates = [
+            (end_day - timedelta(days=offset)).strftime("%Y%m%d")
+            for offset in range(90, -1, -1)
+        ]
+
+        context, error = flow_lab_build_finmind_context(
+            symbol=symbol,
+            unique_dates=unique_dates,
+        )
+
+        if error:
+            return None, error
+
+        records = [
+            record
+            for record in context.values()
+            if record and record.get("hasFlowData")
+        ]
+
+        if not records:
+            return None, "FinMind 找不到可用法人資料"
+
+        latest_record = records[-1]
+
+        return {
+            **latest_record,
+            "sourceMode": "FINMIND_LATEST_FALLBACK",
+            "reason": (
+                latest_record.get("reason", "")
+                + "｜Flow Lab：TWSE 最新資料不可用時，改用 FinMind 最近區間資料。"
+            ),
+        }, ""
+
+    except Exception as error:
+        return None, str(error)
+
+
+def normalize_flow_lab_record(symbol: str, record: dict, fallback_date: str):
+    clean_symbol = normalize_symbol_code(symbol)
+    security_info = get_security_info(clean_symbol)
+
+    return {
+        "symbol": clean_symbol,
+        "name": record.get("name")
+        or security_info.get("name")
+        or get_stock_name(clean_symbol)
+        or clean_symbol,
+        "market": record.get("market", security_info.get("market", "TWSE")),
+        "date": record.get("date", fallback_date),
+        "foreignNetLots": round(float(record.get("foreignNetLots", 0)), 1),
+        "trustNetLots": round(float(record.get("trustNetLots", 0)), 1),
+        "dealerNetLots": round(float(record.get("dealerNetLots", 0)), 1),
+        "totalNetLots": round(float(record.get("totalNetLots", 0)), 1),
+        "score": int(round(float(record.get("score", 50)))),
+        "signal": record.get("signal", "中性"),
+        "strategies": record.get("strategies", []),
+        "reason": record.get("reason", "法人買賣超訊號不明顯，先列入觀察。"),
+        "sourceMode": record.get("sourceMode", ""),
+        "hasFlowData": bool(record.get("hasFlowData", True)),
+    }
+
+
+@app.post("/institutional-flow/latest")
+def read_institutional_flow_latest(request: FlowLabLatestRequest):
+    symbols = parse_flow_lab_symbols(request.symbols)
+
+    if not symbols:
+        raise HTTPException(status_code=400, detail="請至少輸入一個股票代號")
+
+    requested_date = flow_lab_normalize_date_text(
+        request.date or date.today().strftime("%Y%m%d")
+    )
+
+    lookback_days = max(0, min(int(request.lookbackDays or 5), 14))
+
+    records = []
+    errors = []
+    used_dates = []
+    source_modes = []
+
+    for symbol in symbols:
+        latest_record, twse_error = flow_lab_get_latest_twse_record(
+            symbol=symbol,
+            end_date=requested_date,
+            lookback_days=lookback_days,
+        )
+
+        source_mode = "TWSE_LATEST_PRIORITY"
+
+        if latest_record is None:
+            latest_record, finmind_error = flow_lab_finmind_fallback_record(
+                symbol=symbol,
+                end_date_text=requested_date,
+            )
+            source_mode = "FINMIND_LATEST_FALLBACK"
+
+            if latest_record is None:
+                errors.append(
+                    {
+                        "symbol": symbol,
+                        "error": f"TWSE：{twse_error}｜FinMind：{finmind_error}",
+                    }
+                )
+
+                latest_record = {
+                    "symbol": symbol,
+                    "name": get_stock_name(symbol),
+                    "market": "TWSE",
+                    "date": requested_date,
+                    "foreignNetLots": 0,
+                    "trustNetLots": 0,
+                    "dealerNetLots": 0,
+                    "totalNetLots": 0,
+                    "score": 50,
+                    "signal": "無法人資料",
+                    "strategies": [],
+                    "reason": "Flow Lab 最新法人資料讀取失敗，暫以中性顯示。",
+                    "sourceMode": "NEUTRAL_FALLBACK",
+                    "hasFlowData": False,
+                }
+                source_mode = "NEUTRAL_FALLBACK"
+
+        normalized = normalize_flow_lab_record(
+            symbol=symbol,
+            record=latest_record,
+            fallback_date=requested_date,
+        )
+
+        records.append(normalized)
+        used_dates.append(normalized.get("date", requested_date))
+        source_modes.append(source_mode)
+
+    records = sorted(
+        records,
+        key=lambda item: (
+            item.get("hasFlowData", False),
+            item.get("score", 0),
+            item.get("totalNetLots", 0),
+        ),
+        reverse=True,
+    )
+
+    used_date = max(used_dates) if used_dates else requested_date
+    unique_source_modes = sorted(set(source_modes))
+
+    return {
+        "ok": True,
+        "source": "TWSE latest-first with FinMind fallback",
+        "sourceModes": unique_source_modes,
+        "market": "TWSE",
+        "requestedDate": requested_date,
+        "usedDate": used_date,
+        "count": len(records),
+        "records": records,
+        "errors": errors,
+    }
+# ============================================================
+# Flow Lab latest V2 API
+# Adds custom watch symbols + recent buy-over accumulation days.
+# Latest day: TWSE T86 priority.
+# Recent N-day accumulation: FinMind range query.
+# ============================================================
+
+try:
+    from institutional_flow import (
+        get_latest_twse_record_for_symbol as flow_lab_v2_get_latest_twse_record,
+        fetch_finmind_institutional_range as flow_lab_v2_fetch_finmind_range,
+        parse_finmind_institutional_payload as flow_lab_v2_parse_finmind_payload,
+        normalize_date_text as flow_lab_v2_normalize_date_text,
+    )
+except Exception:
+    from backend.institutional_flow import (
+        get_latest_twse_record_for_symbol as flow_lab_v2_get_latest_twse_record,
+        fetch_finmind_institutional_range as flow_lab_v2_fetch_finmind_range,
+        parse_finmind_institutional_payload as flow_lab_v2_parse_finmind_payload,
+        normalize_date_text as flow_lab_v2_normalize_date_text,
+    )
+
+
+class FlowLabLatestV2Request(BaseModel):
+    symbols: str = "2330, 2454, 2317, 2382, 2308, 2881, 2603"
+    date: str = ""
+    lookbackDays: int = 5
+    accumulationDays: int = 5
+
+
+def parse_flow_lab_v2_symbols(symbols_text: str):
+    return [
+        normalize_symbol_code(item.strip())
+        for item in str(symbols_text or "")
+        .replace("，", ",")
+        .replace("\n", ",")
+        .split(",")
+        if item.strip()
+    ]
+
+
+def flow_lab_v2_clamp(value, minimum, maximum):
+    try:
+        numeric = int(value)
+    except Exception:
+        numeric = minimum
+
+    return max(minimum, min(maximum, numeric))
+
+
+def flow_lab_v2_signal_from_score(score: int):
+    if score >= 80:
+        return "強勢買盤"
+    if score >= 65:
+        return "偏多觀察"
+    if score >= 50:
+        return "中性"
+    if score >= 35:
+        return "籌碼偏弱"
+    return "賣壓風險"
+
+
+def flow_lab_v2_recent_summary(symbol: str, end_date_text: str, accumulation_days: int):
+    clean_symbol = normalize_symbol_code(symbol)
+    clean_end = flow_lab_v2_normalize_date_text(end_date_text)
+    safe_days = flow_lab_v2_clamp(accumulation_days, 1, 60)
+
+    try:
+        end_day = date(
+            int(clean_end[:4]),
+            int(clean_end[4:6]),
+            int(clean_end[6:8]),
+        )
+
+        # 多抓一點日曆天，避免遇到週末、國定假日導致交易日不夠。
+        calendar_buffer_days = max(90, safe_days * 5)
+        start_day = end_day - timedelta(days=calendar_buffer_days)
+
+        payload = flow_lab_v2_fetch_finmind_range(
+            symbol=clean_symbol,
+            start_date=start_day.strftime("%Y%m%d"),
+            end_date=clean_end,
+            force_refresh=False,
+        )
+
+        flow_by_date = flow_lab_v2_parse_finmind_payload(
+            symbol=clean_symbol,
+            payload=payload,
+        )
+
+        available_dates = sorted(
+            [
+                key
+                for key in flow_by_date.keys()
+                if key <= clean_end and flow_by_date[key].get("hasFlowData")
+            ]
+        )
+
+        recent_dates = available_dates[-safe_days:]
+        records = [flow_by_date[key] for key in recent_dates]
+
+        if not records:
+            return {
+                "accumulationDays": safe_days,
+                "recentFlowDays": 0,
+                "recentStartDate": "",
+                "recentEndDate": "",
+                "recentForeignBuyDays": 0,
+                "recentTrustBuyDays": 0,
+                "recentDealerBuyDays": 0,
+                "recentTotalBuyDays": 0,
+                "recentSyncBuyDays": 0,
+                "recentForeignNetLotsSum": 0,
+                "recentTrustNetLotsSum": 0,
+                "recentDealerNetLotsSum": 0,
+                "recentTotalNetLotsSum": 0,
+                "recentFlowScoreAvg": 50,
+                "recentFlowSignal": "無近期法人資料",
+                "recentFlowNote": "FinMind 找不到近期法人買賣超資料。",
+            }, ""
+
+        foreign_sum = sum(float(record.get("foreignNetLots", 0)) for record in records)
+        trust_sum = sum(float(record.get("trustNetLots", 0)) for record in records)
+        dealer_sum = sum(float(record.get("dealerNetLots", 0)) for record in records)
+        total_sum = sum(float(record.get("totalNetLots", 0)) for record in records)
+
+        foreign_buy_days = sum(1 for record in records if float(record.get("foreignNetLots", 0)) > 0)
+        trust_buy_days = sum(1 for record in records if float(record.get("trustNetLots", 0)) > 0)
+        dealer_buy_days = sum(1 for record in records if float(record.get("dealerNetLots", 0)) > 0)
+        total_buy_days = sum(1 for record in records if float(record.get("totalNetLots", 0)) > 0)
+        sync_buy_days = sum(
+            1
+            for record in records
+            if float(record.get("foreignNetLots", 0)) > 0
+            and float(record.get("trustNetLots", 0)) > 0
+        )
+
+        score_avg = sum(float(record.get("score", 50)) for record in records) / len(records)
+
+        if sync_buy_days >= max(1, safe_days // 2):
+            recent_signal = "外資投信多日同步偏多"
+        elif foreign_buy_days >= max(1, safe_days // 2) and trust_buy_days >= 1:
+            recent_signal = "外資偏多且投信有買"
+        elif trust_buy_days >= max(1, safe_days // 2):
+            recent_signal = "投信多日買超"
+        elif total_buy_days >= max(1, safe_days // 2):
+            recent_signal = "三大法人多日買超"
+        elif total_sum < 0:
+            recent_signal = "近期法人偏賣"
+        else:
+            recent_signal = "近期法人中性"
+
+        note = (
+            f"最近 {len(records)} 個交易日："
+            f"外資買超 {foreign_buy_days} 天、"
+            f"投信買超 {trust_buy_days} 天、"
+            f"外資投信同步買超 {sync_buy_days} 天。"
+        )
+
+        return {
+            "accumulationDays": safe_days,
+            "recentFlowDays": len(records),
+            "recentStartDate": recent_dates[0],
+            "recentEndDate": recent_dates[-1],
+            "recentForeignBuyDays": foreign_buy_days,
+            "recentTrustBuyDays": trust_buy_days,
+            "recentDealerBuyDays": dealer_buy_days,
+            "recentTotalBuyDays": total_buy_days,
+            "recentSyncBuyDays": sync_buy_days,
+            "recentForeignNetLotsSum": round(foreign_sum, 1),
+            "recentTrustNetLotsSum": round(trust_sum, 1),
+            "recentDealerNetLotsSum": round(dealer_sum, 1),
+            "recentTotalNetLotsSum": round(total_sum, 1),
+            "recentFlowScoreAvg": round(score_avg, 1),
+            "recentFlowSignal": recent_signal,
+            "recentFlowNote": note,
+        }, ""
+
+    except Exception as error:
+        return {
+            "accumulationDays": safe_days,
+            "recentFlowDays": 0,
+            "recentStartDate": "",
+            "recentEndDate": "",
+            "recentForeignBuyDays": 0,
+            "recentTrustBuyDays": 0,
+            "recentDealerBuyDays": 0,
+            "recentTotalBuyDays": 0,
+            "recentSyncBuyDays": 0,
+            "recentForeignNetLotsSum": 0,
+            "recentTrustNetLotsSum": 0,
+            "recentDealerNetLotsSum": 0,
+            "recentTotalNetLotsSum": 0,
+            "recentFlowScoreAvg": 50,
+            "recentFlowSignal": "近期法人資料失敗",
+            "recentFlowNote": f"近期買超累計資料讀取失敗：{error}",
+        }, str(error)
+
+
+def flow_lab_v2_finmind_latest_fallback(symbol: str, end_date_text: str):
+    summary, error = flow_lab_v2_recent_summary(
+        symbol=symbol,
+        end_date_text=end_date_text,
+        accumulation_days=20,
+    )
+
+    if error:
+        return None, error
+
+    clean_symbol = normalize_symbol_code(symbol)
+    security_info = get_security_info(clean_symbol)
+
+    foreign_lots = float(summary.get("recentForeignNetLotsSum", 0))
+    trust_lots = float(summary.get("recentTrustNetLotsSum", 0))
+    dealer_lots = float(summary.get("recentDealerNetLotsSum", 0))
+    total_lots = float(summary.get("recentTotalNetLotsSum", 0))
+
+    score = 50
+
+    if foreign_lots > 0:
+        score += 8
+    if trust_lots > 0:
+        score += 10
+    if total_lots > 0:
+        score += 8
+    if summary.get("recentSyncBuyDays", 0) >= 2:
+        score += 15
+    if total_lots < 0:
+        score -= 10
+
+    score = max(0, min(100, int(round(score))))
+
+    strategies = []
+
+    if foreign_lots > 0:
+        strategies.append("外資區間買超")
+    if trust_lots > 0:
+        strategies.append("投信區間買超")
+    if summary.get("recentSyncBuyDays", 0) >= 2:
+        strategies.append("外資投信多日同步買超")
+    if total_lots > 0:
+        strategies.append("三大法人區間買超")
+
+    return {
+        "symbol": clean_symbol,
+        "name": security_info.get("name") or get_stock_name(clean_symbol) or clean_symbol,
+        "market": security_info.get("market", "FinMind"),
+        "date": summary.get("recentEndDate") or end_date_text,
+        "foreignNetLots": foreign_lots,
+        "trustNetLots": trust_lots,
+        "dealerNetLots": dealer_lots,
+        "totalNetLots": total_lots,
+        "score": score,
+        "signal": flow_lab_v2_signal_from_score(score),
+        "strategies": strategies,
+        "reason": summary.get("recentFlowNote", "TWSE 最新資料不可用，改用 FinMind 近期資料估算。"),
+        "sourceMode": "FINMIND_RECENT_FALLBACK",
+        "hasFlowData": summary.get("recentFlowDays", 0) > 0,
+    }, ""
+
+
+def flow_lab_v2_normalize_record(symbol: str, record: dict, fallback_date: str, recent_summary: dict):
+    clean_symbol = normalize_symbol_code(symbol)
+    security_info = get_security_info(clean_symbol)
+
+    base_score = int(round(float(record.get("score", 50))))
+    recent_score = float(recent_summary.get("recentFlowScoreAvg", 50))
+    sync_days = int(recent_summary.get("recentSyncBuyDays", 0))
+    trust_buy_days = int(recent_summary.get("recentTrustBuyDays", 0))
+    foreign_buy_days = int(recent_summary.get("recentForeignBuyDays", 0))
+    recent_total_sum = float(recent_summary.get("recentTotalNetLotsSum", 0))
+    recent_days = max(1, int(recent_summary.get("recentFlowDays", 0) or 1))
+
+    bonus = 0
+
+    if sync_days >= max(1, recent_days // 2):
+        bonus += 12
+    if foreign_buy_days >= max(1, recent_days // 2):
+        bonus += 5
+    if trust_buy_days >= max(1, recent_days // 2):
+        bonus += 7
+    if recent_total_sum > 0:
+        bonus += 4
+    if recent_total_sum < 0:
+        bonus -= 8
+
+    adjusted_score = int(round(base_score * 0.75 + recent_score * 0.25 + bonus))
+    adjusted_score = max(0, min(100, adjusted_score))
+
+    strategies = list(record.get("strategies", []) or [])
+
+    if sync_days >= 2:
+        strategies.append("外資投信多日同步買超")
+    if trust_buy_days >= 3:
+        strategies.append("投信多日買超")
+    if foreign_buy_days >= 3:
+        strategies.append("外資多日買超")
+    if recent_total_sum > 0:
+        strategies.append("近期三大法人合計買超")
+
+    strategies = list(dict.fromkeys(strategies))
+
+    return {
+        "symbol": clean_symbol,
+        "name": record.get("name")
+        or security_info.get("name")
+        or get_stock_name(clean_symbol)
+        or clean_symbol,
+        "market": record.get("market", security_info.get("market", "TWSE")),
+        "date": record.get("date", fallback_date),
+        "foreignNetLots": round(float(record.get("foreignNetLots", 0)), 1),
+        "trustNetLots": round(float(record.get("trustNetLots", 0)), 1),
+        "dealerNetLots": round(float(record.get("dealerNetLots", 0)), 1),
+        "totalNetLots": round(float(record.get("totalNetLots", 0)), 1),
+        "score": adjusted_score,
+        "baseScore": base_score,
+        "signal": flow_lab_v2_signal_from_score(adjusted_score),
+        "strategies": strategies,
+        "reason": (
+            record.get("reason", "法人買賣超訊號不明顯，先列入觀察。")
+            + "｜"
+            + recent_summary.get("recentFlowNote", "")
+        ),
+        "sourceMode": record.get("sourceMode", ""),
+        "hasFlowData": bool(record.get("hasFlowData", True)),
+        **recent_summary,
+    }
+
+
+@app.post("/institutional-flow/latest-v2")
+def read_institutional_flow_latest_v2(request: FlowLabLatestV2Request):
+    symbols = parse_flow_lab_v2_symbols(request.symbols)
+
+    if not symbols:
+        raise HTTPException(status_code=400, detail="請至少輸入一個股票代號")
+
+    requested_date = flow_lab_v2_normalize_date_text(
+        request.date or date.today().strftime("%Y%m%d")
+    )
+
+    lookback_days = flow_lab_v2_clamp(request.lookbackDays, 0, 14)
+    accumulation_days = flow_lab_v2_clamp(request.accumulationDays, 1, 60)
+
+    records = []
+    errors = []
+    used_dates = []
+    source_modes = []
+
+    for symbol in symbols:
+        latest_record, twse_error = flow_lab_v2_get_latest_twse_record(
+            symbol=symbol,
+            end_date=requested_date,
+            lookback_days=lookback_days,
+        )
+
+        source_mode = "TWSE_LATEST_PRIORITY"
+
+        if latest_record is None:
+            latest_record, finmind_latest_error = flow_lab_v2_finmind_latest_fallback(
+                symbol=symbol,
+                end_date_text=requested_date,
+            )
+            source_mode = "FINMIND_RECENT_FALLBACK"
+
+            if latest_record is None:
+                latest_record = {
+                    "symbol": symbol,
+                    "name": get_stock_name(symbol),
+                    "market": "TWSE",
+                    "date": requested_date,
+                    "foreignNetLots": 0,
+                    "trustNetLots": 0,
+                    "dealerNetLots": 0,
+                    "totalNetLots": 0,
+                    "score": 50,
+                    "signal": "無法人資料",
+                    "strategies": [],
+                    "reason": "Flow Lab 最新法人資料讀取失敗，暫以中性顯示。",
+                    "sourceMode": "NEUTRAL_FALLBACK",
+                    "hasFlowData": False,
+                }
+                source_mode = "NEUTRAL_FALLBACK"
+
+                errors.append(
+                    {
+                        "symbol": symbol,
+                        "error": f"TWSE：{twse_error}｜FinMind：{finmind_latest_error}",
+                    }
+                )
+
+        recent_summary, recent_error = flow_lab_v2_recent_summary(
+            symbol=symbol,
+            end_date_text=requested_date,
+            accumulation_days=accumulation_days,
+        )
+
+        if recent_error:
+            errors.append(
+                {
+                    "symbol": symbol,
+                    "error": recent_error,
+                }
+            )
+
+        normalized = flow_lab_v2_normalize_record(
+            symbol=symbol,
+            record=latest_record,
+            fallback_date=requested_date,
+            recent_summary=recent_summary,
+        )
+
+        records.append(normalized)
+        used_dates.append(normalized.get("date", requested_date))
+        source_modes.append(source_mode)
+
+    records = sorted(
+        records,
+        key=lambda item: (
+            item.get("hasFlowData", False),
+            item.get("score", 0),
+            item.get("recentSyncBuyDays", 0),
+            item.get("recentTotalNetLotsSum", 0),
+        ),
+        reverse=True,
+    )
+
+    used_date = max(used_dates) if used_dates else requested_date
+    unique_source_modes = sorted(set(source_modes))
+
+    return {
+        "ok": True,
+        "source": "TWSE latest-first + FinMind recent accumulation",
+        "sourceModes": unique_source_modes,
+        "market": "TWSE",
+        "requestedDate": requested_date,
+        "usedDate": used_date,
+        "lookbackDays": lookback_days,
+        "accumulationDays": accumulation_days,
+        "count": len(records),
+        "records": records,
+        "errors": errors,
+    }
