@@ -319,12 +319,15 @@ export default function Home() {
 
         <section className="grid gap-4 md:grid-cols-4">
           <MetricCard label="年化報酬" value={`${result.annualReturn}%`} />
+
           <MetricCard
             label="最大回撤"
             value={`${result.maxDrawdown}%`}
             danger
           />
+
           <MetricCard label="勝率" value={`${result.winRate}%`} />
+
           <MetricCard label="交易次數" value={result.trades} />
         </section>
 
