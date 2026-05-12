@@ -41,9 +41,22 @@ FALLBACK_STOCK_NAME_MAP = {
     "2308": "台達電",
     "2412": "中華電",
     "0050": "元大台灣50",
+    "0056": "元大高股息",
     "006208": "富邦台50",
+    "00679B": "元大美債20年",
+    "00687B": "國泰20年美債",
+    "00720B": "元大投資級公司債",
+    "00751B": "元大AAA至A公司債",
+    "00692": "富邦公司治理",
     "00878": "國泰永續高股息",
+    "00881": "國泰台灣5G+",
+    "00891": "中信關鍵半導體",
     "00919": "群益台灣精選高息",
+    "00922": "國泰台灣領袖50",
+    "00927": "群益半導體收益",
+    "00929": "復華台灣科技優息",
+    "00935": "野村臺灣新科技50",
+    "00940": "元大台灣價值高息",
     "6488": "環球晶",
 }
 
@@ -68,11 +81,27 @@ class BacktestRequest(BaseModel):
     breakoutWindow: str = "60"
 
 
+class DcaRequest(BaseModel):
+    symbols: str = "0050,006208,00878"
+    monthlyAmount: str = "10000"
+    initialAmount: str = "0"
+    startDate: str = "2020-01-01"
+    endDate: str = ""
+    dayOfMonth: str = "5"
+
+
 def clean_capital(capital: str) -> float:
     try:
         return float(str(capital).replace(",", ""))
     except ValueError:
         return 0
+
+
+def clean_number(value: str, default_value: float = 0):
+    try:
+        return float(str(value).replace(",", "").strip())
+    except Exception:
+        return default_value
 
 
 def parse_position_size(position_size: str) -> float:
@@ -243,7 +272,11 @@ def build_fallback_security_master():
             "symbol": code,
             "name": name,
             "market": "fallback",
+            "marketText": "fallback",
             "type": "unknown",
+            "industry": "",
+            "isin": "",
+            "listedDate": "",
             "source": "fallback",
             "yfinanceCandidates": [f"{code}.TW", f"{code}.TWO"],
         }
@@ -289,7 +322,6 @@ def load_security_master_from_web():
 
                 security_type = infer_security_type(code, cfi_code, remark, name)
 
-                # 排除大部分權證，避免搜尋結果太雜；保留股票 / ETF / ETN / 受益證券 / 其他普通商品
                 if security_type == "warrant":
                     continue
 
@@ -351,13 +383,18 @@ def get_security_info(symbol: str):
         return security_master[code]
 
     fallback = build_fallback_security_master()
+
     return fallback.get(
         code,
         {
             "symbol": code,
             "name": "未找到名稱",
             "market": "",
+            "marketText": "",
             "type": "unknown",
+            "industry": "",
+            "isin": "",
+            "listedDate": "",
             "source": "none",
             "yfinanceCandidates": [f"{code}.TW", f"{code}.TWO"],
         },
@@ -390,12 +427,14 @@ def search_security_master(query: str, limit: int = 20):
         name = str(item.get("name", "")).upper()
         security_type = str(item.get("type", "")).upper()
         market = str(item.get("market", "")).upper()
+        industry = str(item.get("industry", "")).upper()
 
         if (
             clean_query in symbol
             or clean_query in name
             or clean_query in security_type
             or clean_query in market
+            or clean_query in industry
         ):
             matches.append(item)
 
@@ -503,12 +542,18 @@ def previous_high(values, window: int):
 
 
 def calculate_max_drawdown(equity_values):
+    if not equity_values:
+        return 0
+
     peak = equity_values[0]
     max_drawdown = 0
 
     for equity in equity_values:
         if equity > peak:
             peak = equity
+
+        if peak == 0:
+            continue
 
         drawdown = (equity - peak) / peak
 
@@ -1086,6 +1131,157 @@ def generate_optimization_grid(strategy_name: str):
     return grid
 
 
+def group_price_data_by_month(price_data):
+    months = {}
+
+    for item in price_data:
+        month_key = item["date"][:7]
+
+        if month_key not in months:
+            months[month_key] = []
+
+        months[month_key].append(item)
+
+    return months
+
+
+def pick_monthly_buy_day(month_items, target_day: int):
+    for item in month_items:
+        try:
+            day = int(item["date"][-2:])
+        except Exception:
+            continue
+
+        if day >= target_day:
+            return item
+
+    return month_items[-1]
+
+
+def simulate_dca_for_symbol(
+    symbol: str,
+    monthly_amount: float,
+    initial_amount: float,
+    start_date: str,
+    end_date: str,
+    day_of_month: int,
+):
+    price_data, ticker_used = fetch_real_price_series(symbol, start_date, end_date)
+    months = group_price_data_by_month(price_data)
+    security_info = get_security_info(symbol)
+
+    cash = 0
+    shares = 0
+    total_invested = 0
+    trade_count = 0
+    monthly_curve = []
+
+    sorted_month_keys = sorted(months.keys())
+
+    if len(sorted_month_keys) == 0:
+        raise HTTPException(status_code=400, detail=f"{symbol} 沒有足夠資料可做定期定額")
+
+    if initial_amount > 0:
+        first_month_items = months[sorted_month_keys[0]]
+        first_trade_day = first_month_items[0]
+        first_price = first_trade_day["close"]
+
+        cash += initial_amount
+        total_invested += initial_amount
+
+        buy_shares = int(cash // (first_price * (1 + FEE_RATE)))
+
+        if buy_shares > 0:
+            cost = buy_shares * first_price * (1 + FEE_RATE)
+            cash -= cost
+            shares += buy_shares
+            trade_count += 1
+
+    for month_key in sorted_month_keys:
+        month_items = months[month_key]
+        buy_day = pick_monthly_buy_day(month_items, day_of_month)
+        month_end = month_items[-1]
+
+        buy_price = buy_day["close"]
+        month_end_price = month_end["close"]
+
+        cash += monthly_amount
+        total_invested += monthly_amount
+
+        buy_shares = int(cash // (buy_price * (1 + FEE_RATE)))
+
+        if buy_shares > 0:
+            cost = buy_shares * buy_price * (1 + FEE_RATE)
+            cash -= cost
+            shares += buy_shares
+            trade_count += 1
+
+        current_value = cash + shares * month_end_price
+
+        monthly_curve.append(
+            {
+                "period": month_key,
+                "value": round(current_value),
+                "invested": round(total_invested),
+                "shares": shares,
+                "cash": round(cash),
+                "monthEndPrice": month_end_price,
+            }
+        )
+
+    final_price = price_data[-1]["close"]
+    final_value = cash + shares * final_price
+
+    total_return = ((final_value / total_invested) - 1) * 100 if total_invested > 0 else 0
+
+    years = max(len(monthly_curve) / 12, 0.1)
+    annual_return = (
+        ((final_value / total_invested) ** (1 / years) - 1) * 100
+        if total_invested > 0
+        else 0
+    )
+
+    values = [item["value"] for item in monthly_curve]
+    max_drawdown = calculate_max_drawdown(values) if values else 0
+
+    one_shot_cash = total_invested
+    first_price = price_data[0]["close"]
+    one_shot_shares = int(one_shot_cash // (first_price * (1 + FEE_RATE)))
+
+    if one_shot_shares > 0:
+        one_shot_cost = one_shot_shares * first_price * (1 + FEE_RATE)
+        one_shot_cash -= one_shot_cost
+
+    one_shot_final_value = one_shot_cash + one_shot_shares * final_price
+    one_shot_return = (
+        ((one_shot_final_value / total_invested) - 1) * 100
+        if total_invested > 0
+        else 0
+    )
+
+    return {
+        "symbol": normalize_symbol_code(symbol),
+        "stockName": security_info.get("name", "未找到名稱"),
+        "market": security_info.get("market", ""),
+        "securityType": security_info.get("type", ""),
+        "tickerUsed": ticker_used,
+        "monthlyAmount": round(monthly_amount),
+        "initialAmount": round(initial_amount),
+        "totalInvested": round(total_invested),
+        "finalValue": round(final_value),
+        "totalReturn": round(total_return, 1),
+        "annualReturn": round(annual_return, 1),
+        "maxDrawdown": max_drawdown,
+        "shares": shares,
+        "cash": round(cash),
+        "lastClose": final_price,
+        "tradeCount": trade_count,
+        "oneShotFinalValue": round(one_shot_final_value),
+        "oneShotReturn": round(one_shot_return, 1),
+        "curve": monthly_curve,
+    }
+
+
 @app.get("/")
 def read_root():
     return {
@@ -1117,6 +1313,7 @@ def search_security(q: str = "", limit: int = 20):
 @app.get("/security-name/{symbol}")
 def read_security_name(symbol: str):
     security_info = get_security_info(symbol)
+
     return {
         "symbol": normalize_symbol_code(symbol),
         "stockName": security_info.get("name", "未找到名稱"),
@@ -1313,4 +1510,121 @@ def optimize_parameters(request: BacktestRequest):
         "testedCombinations": len(grid),
         "results": optimization_results[:20],
         "errors": errors[:10],
+    }
+
+
+@app.post("/dca")
+def run_dca_backtest(request: DcaRequest):
+    symbols = parse_symbol_list(request.symbols, "")
+
+    if len(symbols) == 0:
+        raise HTTPException(status_code=400, detail="請至少輸入一檔 ETF 或股票代號")
+
+    monthly_amount = clean_number(request.monthlyAmount, 10000)
+    initial_amount = clean_number(request.initialAmount, 0)
+    start_date, end_date = normalize_date_range(request.startDate, request.endDate)
+    day_of_month = parse_int_param(request.dayOfMonth, 5, 1, 28)
+
+    if monthly_amount <= 0:
+        raise HTTPException(status_code=400, detail="每月投入金額必須大於 0")
+
+    per_symbol_monthly_amount = monthly_amount / len(symbols)
+    per_symbol_initial_amount = initial_amount / len(symbols) if initial_amount > 0 else 0
+
+    rows = []
+    errors = []
+    combined_curve = {}
+
+    total_invested = 0
+    final_value = 0
+    one_shot_final_value = 0
+
+    for symbol in symbols:
+        try:
+            result = simulate_dca_for_symbol(
+                symbol=symbol,
+                monthly_amount=per_symbol_monthly_amount,
+                initial_amount=per_symbol_initial_amount,
+                start_date=start_date,
+                end_date=end_date,
+                day_of_month=day_of_month,
+            )
+
+            rows.append(result)
+
+            total_invested += result["totalInvested"]
+            final_value += result["finalValue"]
+            one_shot_final_value += result["oneShotFinalValue"]
+
+            for item in result["curve"]:
+                period = item["period"]
+
+                if period not in combined_curve:
+                    combined_curve[period] = {
+                        "period": period,
+                        "dca": 0,
+                        "invested": 0,
+                    }
+
+                combined_curve[period]["dca"] += item["value"]
+                combined_curve[period]["invested"] += item["invested"]
+
+        except Exception as error:
+            errors.append(
+                {
+                    "symbol": symbol,
+                    "message": str(error),
+                }
+            )
+
+    equity_curve = [
+        {
+            "period": item["period"],
+            "dca": round(item["dca"]),
+            "invested": round(item["invested"]),
+        }
+        for item in sorted(combined_curve.values(), key=lambda x: x["period"])
+    ]
+
+    total_return = ((final_value / total_invested) - 1) * 100 if total_invested > 0 else 0
+
+    one_shot_return = (
+        ((one_shot_final_value / total_invested) - 1) * 100
+        if total_invested > 0
+        else 0
+    )
+
+    years = max(len(equity_curve) / 12, 0.1)
+    annual_return = (
+        ((final_value / total_invested) ** (1 / years) - 1) * 100
+        if total_invested > 0
+        else 0
+    )
+
+    values = [item["dca"] for item in equity_curve]
+    max_drawdown = calculate_max_drawdown(values) if values else 0
+
+    summary = {
+        "symbols": [row["symbol"] for row in rows],
+        "monthlyAmount": round(monthly_amount),
+        "initialAmount": round(initial_amount),
+        "totalInvested": round(total_invested),
+        "finalValue": round(final_value),
+        "totalReturn": round(total_return, 1),
+        "annualReturn": round(annual_return, 1),
+        "maxDrawdown": max_drawdown,
+        "oneShotFinalValue": round(one_shot_final_value),
+        "oneShotReturn": round(one_shot_return, 1),
+        "dcaVsOneShotDelta": round(final_value - one_shot_final_value),
+        "months": len(equity_curve),
+        "startDate": start_date,
+        "endDate": end_date,
+        "dayOfMonth": day_of_month,
+    }
+
+    return {
+        "summary": summary,
+        "rows": rows,
+        "equityCurve": equity_curve,
+        "errors": errors,
     }

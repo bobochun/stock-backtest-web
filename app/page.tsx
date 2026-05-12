@@ -4,6 +4,7 @@ import { useState } from "react";
 
 import AdvancedMetrics from "./components/AdvancedMetrics";
 import BacktestForm from "./components/BacktestForm";
+import DcaBacktestPanel from "./components/DcaBacktestPanel";
 import EquityCurveChart from "./components/EquityCurveChart";
 import EtfQuickPanel from "./components/EtfQuickPanel";
 import MetricCard from "./components/MetricCard";
@@ -291,7 +292,7 @@ export default function Home() {
           </h1>
 
           <p className="mt-4 max-w-2xl text-slate-600">
-            支援單一股票回測、多策略比較、觀察清單掃描、參數最佳化、ETF 快速清單、台股商品搜尋與 CSV 匯出。
+            支援單一股票回測、多策略比較、觀察清單掃描、參數最佳化、ETF 快速清單、台股商品搜尋、ETF 定期定額與 CSV 匯出。
           </p>
         </section>
 
@@ -316,6 +317,8 @@ export default function Home() {
           setWatchlistSymbols={setWatchlistSymbols}
           scanWatchlist={scanWatchlist}
         />
+
+        <DcaBacktestPanel />
 
         <section className="grid gap-4 md:grid-cols-4">
           <MetricCard label="年化報酬" value={`${result.annualReturn}%`} />
