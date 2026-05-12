@@ -5,10 +5,13 @@ import { useState } from "react";
 import AdvancedMetrics from "./components/AdvancedMetrics";
 import BacktestForm from "./components/BacktestForm";
 import EquityCurveChart from "./components/EquityCurveChart";
+import EtfQuickPanel from "./components/EtfQuickPanel";
 import MetricCard from "./components/MetricCard";
 import ParameterOptimizer from "./components/ParameterOptimizer";
+import QuickActionPanel from "./components/QuickActionPanel";
 import RecentResults from "./components/RecentResults";
 import ResultSummary from "./components/ResultSummary";
+import SecuritySearchBox from "./components/SecuritySearchBox";
 import StrategyComparison from "./components/StrategyComparison";
 import TradeTable from "./components/TradeTable";
 import WatchlistScanner from "./components/WatchlistScanner";
@@ -48,32 +51,6 @@ const defaultTrades: TradeRecord[] = [
     shares: 1000,
     pnl: 45000,
     pnlPct: 7.3,
-    result: "獲利",
-  },
-  {
-    id: 2,
-    symbol: "2330",
-    stockName: "台積電",
-    entryDate: "2025-03-05",
-    exitDate: "2025-03-28",
-    entryPrice: 680,
-    exitPrice: 654,
-    shares: 1000,
-    pnl: -26000,
-    pnlPct: -3.8,
-    result: "虧損",
-  },
-  {
-    id: 3,
-    symbol: "2330",
-    stockName: "台積電",
-    entryDate: "2025-05-08",
-    exitDate: "2025-06-20",
-    entryPrice: 640,
-    exitPrice: 712,
-    shares: 1000,
-    pnl: 72000,
-    pnlPct: 11.3,
     result: "獲利",
   },
 ];
@@ -128,24 +105,6 @@ export default function Home() {
       winRate: 62.1,
       trades: 42,
     },
-    {
-      symbol: "2454",
-      stockName: "聯發科",
-      strategy: "突破 60 日新高",
-      annualReturn: 16.8,
-      maxDrawdown: -15.4,
-      winRate: 58.3,
-      trades: 36,
-    },
-    {
-      symbol: "2382",
-      stockName: "廣達",
-      strategy: "回測月線反彈",
-      annualReturn: 19.1,
-      maxDrawdown: -11.6,
-      winRate: 64.2,
-      trades: 31,
-    },
   ]);
 
   const requestBody = {
@@ -159,6 +118,18 @@ export default function Home() {
     startDate,
     endDate,
   };
+
+  function addToWatchlist(nextSymbol: string) {
+    const current = watchlistSymbols
+      .replaceAll("，", ",")
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean);
+
+    if (!current.includes(nextSymbol)) {
+      setWatchlistSymbols([...current, nextSymbol].join(", "));
+    }
+  }
 
   async function runBacktest() {
     if (!symbol.trim()) {
@@ -320,21 +291,40 @@ export default function Home() {
           </h1>
 
           <p className="mt-4 max-w-2xl text-slate-600">
-            支援單一股票回測、多策略比較、觀察清單批次掃描、參數最佳化、停損停利、日期區間、CSV 匯出、股票中文名稱、ETF / 個股搜尋與觀察清單摘要。
+            支援單一股票回測、多策略比較、觀察清單掃描、參數最佳化、ETF 快速清單、台股商品搜尋與 CSV 匯出。
           </p>
         </section>
 
+        <QuickActionPanel
+          isLoading={isLoading}
+          isComparing={isComparing}
+          isScanning={isScanning}
+          isOptimizing={isOptimizing}
+          runBacktest={runBacktest}
+          compareStrategies={compareStrategies}
+          scanWatchlist={scanWatchlist}
+          optimizeParameters={optimizeParameters}
+        />
+
+        <SecuritySearchBox
+          onSelectSymbol={setSymbol}
+          onAddToWatchlist={addToWatchlist}
+        />
+
+        <EtfQuickPanel
+          setSymbol={setSymbol}
+          setWatchlistSymbols={setWatchlistSymbols}
+          scanWatchlist={scanWatchlist}
+        />
+
         <section className="grid gap-4 md:grid-cols-4">
           <MetricCard label="年化報酬" value={`${result.annualReturn}%`} />
-
           <MetricCard
             label="最大回撤"
             value={`${result.maxDrawdown}%`}
             danger
           />
-
           <MetricCard label="勝率" value={`${result.winRate}%`} />
-
           <MetricCard label="交易次數" value={result.trades} />
         </section>
 
@@ -386,34 +376,6 @@ export default function Home() {
         <ParameterOptimizer results={optimizationResults} />
 
         <RecentResults recentResults={recentResults} />
-
-        <section className="rounded-3xl bg-white p-6 shadow-sm">
-          <h2 className="text-xl font-bold text-slate-900">網站開發進度</h2>
-
-          <div className="mt-5 grid gap-4 md:grid-cols-4">
-            <div className="rounded-2xl bg-green-50 p-4">
-              <p className="font-medium text-green-700">第 1 階段</p>
-              <p className="mt-1 text-sm text-green-700">單一股票回測</p>
-            </div>
-
-            <div className="rounded-2xl bg-green-50 p-4">
-              <p className="font-medium text-green-700">第 2 階段</p>
-              <p className="mt-1 text-sm text-green-700">多策略比較</p>
-            </div>
-
-            <div className="rounded-2xl bg-green-50 p-4">
-              <p className="font-medium text-green-700">第 3 階段</p>
-              <p className="mt-1 text-sm text-green-700">觀察清單掃描</p>
-            </div>
-
-            <div className="rounded-2xl bg-purple-50 p-4">
-              <p className="font-medium text-purple-700">第 4 階段</p>
-              <p className="mt-1 text-sm text-purple-700">
-                台股商品庫 / 觀察清單摘要
-              </p>
-            </div>
-          </div>
-        </section>
       </div>
     </main>
   );

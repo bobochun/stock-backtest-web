@@ -1,3 +1,5 @@
+"use client";
+
 type BacktestFormProps = {
   symbol: string;
   watchlistSymbols: string;
@@ -11,6 +13,7 @@ type BacktestFormProps = {
   isLoading: boolean;
   isComparing: boolean;
   isScanning: boolean;
+  isOptimizing: boolean;
   setSymbol: (value: string) => void;
   setWatchlistSymbols: (value: string) => void;
   setStrategy: (value: string) => void;
@@ -23,6 +26,7 @@ type BacktestFormProps = {
   runBacktest: () => void;
   compareStrategies: () => void;
   scanWatchlist: () => void;
+  optimizeParameters: () => void;
 };
 
 export default function BacktestForm({
@@ -38,6 +42,7 @@ export default function BacktestForm({
   isLoading,
   isComparing,
   isScanning,
+  isOptimizing,
   setSymbol,
   setWatchlistSymbols,
   setStrategy,
@@ -50,6 +55,7 @@ export default function BacktestForm({
   runBacktest,
   compareStrategies,
   scanWatchlist,
+  optimizeParameters,
 }: BacktestFormProps) {
   return (
     <div className="rounded-3xl bg-white p-6 shadow-sm">
@@ -75,7 +81,7 @@ export default function BacktestForm({
             placeholder="例如：2330, 2454, 2317, 2382, 0050, 006208"
           />
           <p className="mt-1 text-xs text-slate-500">
-            可用逗號、空格或換行分隔，最多掃描 20 檔。
+            可用逗號、空格或換行分隔，最多掃描 30 檔。
           </p>
         </div>
 
@@ -159,30 +165,42 @@ export default function BacktestForm({
           </div>
         </div>
 
-        <div className="grid gap-3 md:grid-cols-3">
-          <button
-            onClick={runBacktest}
-            disabled={isLoading}
-            className="rounded-2xl bg-blue-600 px-6 py-3 font-medium text-white disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            {isLoading ? "回測中..." : "執行回測"}
-          </button>
+        <div className="rounded-3xl bg-slate-50 p-4">
+          <p className="text-sm font-bold text-slate-700">操作按鈕</p>
 
-          <button
-            onClick={compareStrategies}
-            disabled={isComparing}
-            className="rounded-2xl border border-slate-300 px-6 py-3 font-medium text-slate-700 disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            {isComparing ? "比較中..." : "比較策略"}
-          </button>
+          <div className="mt-3 grid gap-3 md:grid-cols-4">
+            <button
+              onClick={runBacktest}
+              disabled={isLoading}
+              className="rounded-2xl bg-blue-600 px-6 py-3 font-medium text-white disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {isLoading ? "回測中..." : "執行回測"}
+            </button>
 
-          <button
-            onClick={scanWatchlist}
-            disabled={isScanning}
-            className="rounded-2xl bg-slate-900 px-6 py-3 font-medium text-white disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            {isScanning ? "掃描中..." : "掃描清單"}
-          </button>
+            <button
+              onClick={compareStrategies}
+              disabled={isComparing}
+              className="rounded-2xl border border-slate-300 bg-white px-6 py-3 font-medium text-slate-700 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {isComparing ? "比較中..." : "比較策略"}
+            </button>
+
+            <button
+              onClick={scanWatchlist}
+              disabled={isScanning}
+              className="rounded-2xl bg-slate-900 px-6 py-3 font-medium text-white disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {isScanning ? "掃描中..." : "掃描清單"}
+            </button>
+
+            <button
+              onClick={optimizeParameters}
+              disabled={isOptimizing}
+              className="rounded-2xl bg-purple-600 px-6 py-3 font-bold text-white disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {isOptimizing ? "最佳化中..." : "參數最佳化"}
+            </button>
+          </div>
         </div>
       </div>
     </div>
