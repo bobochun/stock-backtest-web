@@ -1653,3 +1653,345 @@ STRATEGIES = EXTENDED_STRATEGIES
 get_current_signal = extended_get_current_signal
 get_signals = extended_get_signals
 generate_optimization_grid = extended_generate_optimization_grid
+# ============================================================
+# V3 Institutional flow enabled backtest override
+# This overrides run_strategy_backtest so flow strategies can
+# use historical TWSE institutional flow context.
+# ============================================================
+
+try:
+    from strategy_ext import is_flow_strategy as extended_is_flow_strategy
+except Exception:
+    from backend.strategy_ext import is_flow_strategy as extended_is_flow_strategy
+
+try:
+    from institutional_flow import (
+        build_flow_context_for_price_dates,
+        summarize_flow_context,
+        normalize_date_text as normalize_flow_date_text,
+    )
+except Exception:
+    from backend.institutional_flow import (
+        build_flow_context_for_price_dates,
+        summarize_flow_context,
+        normalize_date_text as normalize_flow_date_text,
+    )
+
+
+def run_strategy_backtest(
+    symbol: str,
+    strategy_name: str,
+    initial_capital: float,
+    position_fraction: float,
+    stop_loss_rate: float,
+    take_profit_rate: float,
+    start_date: str,
+    end_date: str,
+    fast_ma_window: int = 20,
+    slow_ma_window: int = 60,
+    breakout_window: int = 60,
+    price_data=None,
+    ticker_used=None,
+):
+    if price_data is None:
+        price_data, ticker_used = fetch_real_price_series(symbol, start_date, end_date)
+
+    if ticker_used is None:
+        ticker_used = symbol
+
+    closes = [item["close"] for item in price_data]
+    price_dates = [item["date"] for item in price_data]
+
+    fast_ma = moving_average(closes, fast_ma_window)
+    slow_ma = moving_average(closes, slow_ma_window)
+    high_window = previous_high(closes, breakout_window)
+
+    flow_enabled = bool(extended_is_flow_strategy(strategy_name))
+    flow_context = {}
+    flow_fetch_error = ""
+
+    if flow_enabled:
+        try:
+            # 避免一次抓太多年資料造成 TWSE 請求過慢。
+            # 第一版先抓最近 180 個交易日左右，之後可再做完整歷史快取。
+            flow_context = build_flow_context_for_price_dates(
+                symbol=symbol,
+                price_dates=price_dates,
+                max_fetch_days=180,
+                lookback_days=0,
+            )
+        except Exception as error:
+            flow_fetch_error = str(error)
+            flow_context = {}
+
+    flow_summary = summarize_flow_context(flow_context) if flow_enabled else {
+        "flowDataDays": 0,
+        "flowScoreAvg": 50,
+        "foreignNetLotsSum": 0,
+        "trustNetLotsSum": 0,
+        "dealerNetLotsSum": 0,
+        "flowSignal": "未啟用法人資料",
+    }
+
+    def get_flow_record_by_index(index: int):
+        if not flow_enabled or not flow_context:
+            return None
+
+        if index < 0 or index >= len(price_dates):
+            return None
+
+        date_key = normalize_flow_date_text(price_dates[index])
+
+        return flow_context.get(date_key)
+
+    cash = initial_capital
+    shares = 0
+    entry_date = None
+    entry_price = None
+    entry_cost = 0
+    entry_flow_record = None
+    trade_records = []
+    daily_curve = []
+
+    start_index = max(fast_ma_window, slow_ma_window, breakout_window)
+
+    if start_index >= len(price_data) - 1:
+        raise HTTPException(
+            status_code=400,
+            detail="資料區間太短，無法計算目前參數組合。請拉長日期區間。",
+        )
+
+    benchmark_start_price = closes[start_index]
+
+    for i in range(start_index, len(price_data)):
+        today = price_data[i]
+        close = today["close"]
+
+        buy_signal, sell_signal = get_signals(
+            strategy_name=strategy_name,
+            i=i,
+            closes=closes,
+            fast_ma=fast_ma,
+            slow_ma=slow_ma,
+            high_window=high_window,
+            shares=shares,
+            entry_price=entry_price,
+            stop_loss_rate=stop_loss_rate,
+            take_profit_rate=take_profit_rate,
+            price_dates=price_dates,
+            flow_context=flow_context,
+        )
+
+        today_flow_record = get_flow_record_by_index(i)
+
+        if buy_signal:
+            position_budget = cash * position_fraction
+            buy_shares = int(position_budget // (close * 100)) * 100
+            total_cost = buy_shares * close * (1 + FEE_RATE)
+
+            if buy_shares > 0 and total_cost <= cash:
+                shares = buy_shares
+                cash -= total_cost
+                entry_date = today["date"]
+                entry_price = close
+                entry_cost = total_cost
+                entry_flow_record = today_flow_record
+
+        if sell_signal and shares > 0:
+            sell_value = shares * close
+            proceeds = sell_value * (1 - FEE_RATE - TAX_RATE)
+            pnl = proceeds - entry_cost
+            pnl_pct = (pnl / entry_cost) * 100
+
+            trade_record = {
+                "id": len(trade_records) + 1,
+                "symbol": normalize_symbol_code(symbol),
+                "stockName": get_stock_name(symbol),
+                "entryDate": entry_date,
+                "exitDate": today["date"],
+                "entryPrice": entry_price,
+                "exitPrice": close,
+                "shares": shares,
+                "pnl": round(pnl),
+                "pnlPct": round(pnl_pct, 1),
+                "result": "獲利" if pnl >= 0 else "虧損",
+            }
+
+            if flow_enabled:
+                trade_record.update(
+                    {
+                        "entryFlowSignal": (entry_flow_record or {}).get("signal", "無法人資料"),
+                        "entryFlowScore": (entry_flow_record or {}).get("score", 50),
+                        "entryForeignNetLots": (entry_flow_record or {}).get("foreignNetLots", 0),
+                        "entryTrustNetLots": (entry_flow_record or {}).get("trustNetLots", 0),
+                        "exitFlowSignal": (today_flow_record or {}).get("signal", "無法人資料"),
+                        "exitFlowScore": (today_flow_record or {}).get("score", 50),
+                    }
+                )
+
+            trade_records.append(trade_record)
+
+            cash += proceeds
+            shares = 0
+            entry_date = None
+            entry_price = None
+            entry_cost = 0
+            entry_flow_record = None
+
+        current_equity = cash + shares * close
+        benchmark_equity = initial_capital * close / benchmark_start_price
+
+        daily_curve.append(
+            {
+                "date": today["date"],
+                "strategy": current_equity,
+                "benchmark": benchmark_equity,
+            }
+        )
+
+    if shares > 0:
+        final_day = price_data[-1]
+        final_close = final_day["close"]
+        final_flow_record = get_flow_record_by_index(len(price_data) - 1)
+
+        sell_value = shares * final_close
+        proceeds = sell_value * (1 - FEE_RATE - TAX_RATE)
+        pnl = proceeds - entry_cost
+        pnl_pct = (pnl / entry_cost) * 100
+
+        trade_record = {
+            "id": len(trade_records) + 1,
+            "symbol": normalize_symbol_code(symbol),
+            "stockName": get_stock_name(symbol),
+            "entryDate": entry_date,
+            "exitDate": final_day["date"],
+            "entryPrice": entry_price,
+            "exitPrice": final_close,
+            "shares": shares,
+            "pnl": round(pnl),
+            "pnlPct": round(pnl_pct, 1),
+            "result": "獲利" if pnl >= 0 else "虧損",
+        }
+
+        if flow_enabled:
+            trade_record.update(
+                {
+                    "entryFlowSignal": (entry_flow_record or {}).get("signal", "無法人資料"),
+                    "entryFlowScore": (entry_flow_record or {}).get("score", 50),
+                    "entryForeignNetLots": (entry_flow_record or {}).get("foreignNetLots", 0),
+                    "entryTrustNetLots": (entry_flow_record or {}).get("trustNetLots", 0),
+                    "exitFlowSignal": (final_flow_record or {}).get("signal", "無法人資料"),
+                    "exitFlowScore": (final_flow_record or {}).get("score", 50),
+                }
+            )
+
+        trade_records.append(trade_record)
+
+        cash += proceeds
+        daily_curve[-1]["strategy"] = cash
+
+    final_equity = daily_curve[-1]["strategy"]
+    years = len(daily_curve) / 252
+    annual_return = ((final_equity / initial_capital) ** (1 / years) - 1) * 100
+    equity_values = [item["strategy"] for item in daily_curve]
+    max_drawdown = calculate_max_drawdown(equity_values)
+    trade_count = len(trade_records)
+    win_count = len([trade for trade in trade_records if trade["pnl"] > 0])
+    win_rate = (win_count / trade_count * 100) if trade_count > 0 else 0
+
+    latest_flow_record = get_flow_record_by_index(len(price_data) - 1)
+
+    current_signal = get_current_signal(
+        strategy_name,
+        closes,
+        fast_ma,
+        slow_ma,
+        high_window,
+        latest_flow_record=latest_flow_record,
+    )
+
+    advanced_metrics = calculate_advanced_metrics(
+        initial_capital=initial_capital,
+        final_equity=final_equity,
+        benchmark_start_price=benchmark_start_price,
+        benchmark_end_price=closes[-1],
+        trade_records=trade_records,
+        max_drawdown=max_drawdown,
+    )
+
+    latest_close = closes[-1]
+    latest_fast_ma = fast_ma[-1]
+    latest_slow_ma = slow_ma[-1]
+    latest_high = high_window[-1]
+
+    opportunity_score = calculate_opportunity_score(
+        annual_return=annual_return,
+        max_drawdown=max_drawdown,
+        win_rate=win_rate,
+        profit_factor=advanced_metrics["profitFactor"],
+        current_signal=current_signal,
+    )
+
+    if flow_enabled:
+        opportunity_score = min(
+            100,
+            max(
+                0,
+                round(opportunity_score * 0.75 + flow_summary.get("flowScoreAvg", 50) * 0.25),
+            ),
+        )
+
+    security_info = get_security_info(symbol)
+
+    result = {
+        "symbol": normalize_symbol_code(symbol),
+        "stockName": security_info.get("name", "未找到名稱"),
+        "market": security_info.get("market", ""),
+        "securityType": security_info.get("type", ""),
+        "strategy": strategy_name,
+        "annualReturn": round(annual_return, 1),
+        "maxDrawdown": max_drawdown,
+        "winRate": round(win_rate, 1),
+        "trades": trade_count,
+        "tickerUsed": ticker_used,
+        "dataSource": "Yahoo Finance via yfinance + TWSE ISIN security master",
+        "dataStartDate": price_data[0]["date"],
+        "dataEndDate": price_data[-1]["date"],
+        "lastClose": latest_close,
+        "ma20": round(latest_fast_ma, 2) if latest_fast_ma is not None else None,
+        "ma60": round(latest_slow_ma, 2) if latest_slow_ma is not None else None,
+        "high60": round(latest_high, 2) if latest_high is not None else None,
+        "distanceToMa20Pct": safe_round(calculate_distance_pct(latest_close, latest_fast_ma), 1),
+        "distanceToMa60Pct": safe_round(calculate_distance_pct(latest_close, latest_slow_ma), 1),
+        "distanceToHigh60Pct": safe_round(calculate_distance_pct(latest_close, latest_high), 1),
+        "currentSignal": current_signal,
+        "opportunityScore": opportunity_score,
+        "fastMaWindow": fast_ma_window,
+        "slowMaWindow": slow_ma_window,
+        "breakoutWindow": breakout_window,
+        "stopLossPct": round(stop_loss_rate * 100, 1),
+        "takeProfitPct": round(take_profit_rate * 100, 1),
+        "positionSizePct": round(position_fraction * 100, 1),
+        "flowEnabled": flow_enabled,
+        "flowFetchError": flow_fetch_error,
+        "flowDataDays": flow_summary.get("flowDataDays", 0),
+        "flowScoreAvg": flow_summary.get("flowScoreAvg", 50),
+        "foreignNetLotsSum": flow_summary.get("foreignNetLotsSum", 0),
+        "trustNetLotsSum": flow_summary.get("trustNetLotsSum", 0),
+        "dealerNetLotsSum": flow_summary.get("dealerNetLotsSum", 0),
+        "flowSignal": flow_summary.get("flowSignal", "未啟用法人資料"),
+        "latestFlowRecord": latest_flow_record,
+        **advanced_metrics,
+    }
+
+    if flow_enabled:
+        result["dataSource"] = (
+            "Yahoo Finance via yfinance + TWSE ISIN security master + "
+            "TWSE T86 institutional flow cache"
+        )
+
+    return {
+        "result": result,
+        "equityCurve": compress_equity_curve(daily_curve),
+        "tradeRecords": trade_records,
+    }
