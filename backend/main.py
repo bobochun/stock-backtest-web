@@ -1628,3 +1628,28 @@ def run_dca_backtest(request: DcaRequest):
         "equityCurve": equity_curve,
         "errors": errors,
     }
+# ============================================================
+# Extended strategy router
+# This block overrides the original strategy list and signal
+# functions with the expanded strategy engine.
+# ============================================================
+
+try:
+    from strategy_ext import (
+        STRATEGIES as EXTENDED_STRATEGIES,
+        get_current_signal as extended_get_current_signal,
+        get_signals as extended_get_signals,
+        generate_optimization_grid as extended_generate_optimization_grid,
+    )
+except Exception:
+    from backend.strategy_ext import (
+        STRATEGIES as EXTENDED_STRATEGIES,
+        get_current_signal as extended_get_current_signal,
+        get_signals as extended_get_signals,
+        generate_optimization_grid as extended_generate_optimization_grid,
+    )
+
+STRATEGIES = EXTENDED_STRATEGIES
+get_current_signal = extended_get_current_signal
+get_signals = extended_get_signals
+generate_optimization_grid = extended_generate_optimization_grid
