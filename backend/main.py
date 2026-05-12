@@ -1995,3 +1995,365 @@ def run_strategy_backtest(
         "equityCurve": compress_equity_curve(daily_curve),
         "tradeRecords": trade_records,
     }
+# ============================================================
+# Quote API for Watchlist auto-fill
+# Returns stock name and latest available close price.
+# ============================================================
+
+@app.get("/quote/{symbol}")
+def read_quote(symbol: str):
+    clean_symbol = normalize_symbol_code(symbol)
+
+    if not clean_symbol:
+        raise HTTPException(status_code=400, detail="請輸入股票代號，例如 2330")
+
+    end = (date.today() + timedelta(days=1)).isoformat()
+    start = (date.today() - timedelta(days=420)).isoformat()
+
+    price_data, ticker_used = fetch_real_price_series(clean_symbol, start, end)
+    security_info = get_security_info(clean_symbol)
+
+    latest = price_data[-1]
+
+    return {
+        "symbol": clean_symbol,
+        "stockName": security_info.get("name", "未找到名稱"),
+        "market": security_info.get("market", ""),
+        "securityType": security_info.get("type", ""),
+        "tickerUsed": ticker_used,
+        "lastClose": latest["close"],
+        "lastDate": latest["date"],
+        "dataSource": "Yahoo Finance via yfinance + TWSE ISIN security master",
+    }
+# ============================================================
+# V3 Screener API
+# After-market stock screener for MA, breakout, RSI, and flow.
+# ============================================================
+
+try:
+    from pydantic import BaseModel
+except Exception:
+    pass
+
+try:
+    from strategy_ext import calculate_rsi as screener_calculate_rsi
+    from strategy_ext import rolling_high as screener_rolling_high
+except Exception:
+    from backend.strategy_ext import calculate_rsi as screener_calculate_rsi
+    from backend.strategy_ext import rolling_high as screener_rolling_high
+
+try:
+    from institutional_flow import (
+        build_flow_context_for_price_dates as screener_build_flow_context,
+        summarize_flow_context as screener_summarize_flow_context,
+        normalize_date_text as screener_normalize_flow_date,
+    )
+except Exception:
+    from backend.institutional_flow import (
+        build_flow_context_for_price_dates as screener_build_flow_context,
+        summarize_flow_context as screener_summarize_flow_context,
+        normalize_date_text as screener_normalize_flow_date,
+    )
+
+
+class ScreenerRequest(BaseModel):
+    symbols: str = "2330, 2454, 2317, 2382, 2308, 2357, 2881, 2603, 0050, 00878"
+    startDate: str = ""
+    endDate: str = ""
+    useFlow: bool = True
+    minScore: int = 55
+    requireAboveMa20: bool = False
+    requireFlowPositive: bool = False
+    requireBreakout: bool = False
+    requireRsiRebound: bool = False
+
+
+def parse_screener_symbols(symbols_text: str):
+    return [
+        normalize_symbol_code(item.strip())
+        for item in str(symbols_text or "")
+        .replace("，", ",")
+        .replace("\n", ",")
+        .split(",")
+        if item.strip()
+    ]
+
+
+def screener_safe_pct(numerator, denominator):
+    try:
+        if denominator is None or denominator == 0:
+            return None
+
+        return round((numerator / denominator - 1) * 100, 1)
+    except Exception:
+        return None
+
+
+def screener_bool_score(value, points):
+    return points if value else 0
+
+
+@app.post("/screener")
+def run_screener(request: ScreenerRequest):
+    symbols = parse_screener_symbols(request.symbols)
+
+    if not symbols:
+        raise HTTPException(status_code=400, detail="請至少輸入一個股票代號")
+
+    end_date = request.endDate or (date.today() + timedelta(days=1)).isoformat()
+    start_date = request.startDate or (date.today() - timedelta(days=420)).isoformat()
+
+    candidates = []
+    errors = []
+
+    for symbol in symbols:
+        try:
+            price_data, ticker_used = fetch_real_price_series(symbol, start_date, end_date)
+
+            if len(price_data) < 80:
+                errors.append(
+                    {
+                        "symbol": symbol,
+                        "error": "價格資料不足，至少需要 80 筆交易日資料。",
+                    }
+                )
+                continue
+
+            closes = [item["close"] for item in price_data]
+            price_dates = [item["date"] for item in price_data]
+
+            latest = price_data[-1]
+            latest_close = closes[-1]
+            previous_close = closes[-2]
+
+            ma20_series = moving_average(closes, 20)
+            ma60_series = moving_average(closes, 60)
+
+            ma20 = ma20_series[-1]
+            ma60 = ma60_series[-1]
+
+            high20 = screener_rolling_high(
+                values=closes,
+                index=len(closes) - 1,
+                window=20,
+                exclude_current=True,
+            )
+
+            rsi = screener_calculate_rsi(
+                values=closes,
+                index=len(closes) - 1,
+                period=14,
+            )
+
+            above_ma20 = ma20 is not None and latest_close > ma20
+            above_ma60 = ma60 is not None and latest_close > ma60
+            ma20_above_ma60 = ma20 is not None and ma60 is not None and ma20 > ma60
+            near_ma20 = (
+                ma20 is not None
+                and abs((latest_close / ma20 - 1) * 100) <= 3
+            )
+            breakout20 = high20 is not None and latest_close > high20
+            rsi_rebound = (
+                rsi is not None
+                and 35 <= rsi <= 60
+                and latest_close > previous_close
+            )
+
+            flow_enabled = bool(request.useFlow)
+            flow_context = {}
+            flow_summary = {
+                "flowDataDays": 0,
+                "flowScoreAvg": 50,
+                "foreignNetLotsSum": 0,
+                "trustNetLotsSum": 0,
+                "dealerNetLotsSum": 0,
+                "flowSignal": "未啟用法人資料",
+            }
+            latest_flow_record = None
+
+            if flow_enabled:
+                try:
+                    flow_context = screener_build_flow_context(
+                        symbol=symbol,
+                        price_dates=price_dates,
+                        max_fetch_days=60,
+                        lookback_days=0,
+                    )
+                    flow_summary = screener_summarize_flow_context(flow_context)
+
+                    latest_date_key = screener_normalize_flow_date(price_dates[-1])
+                    latest_flow_record = flow_context.get(latest_date_key)
+
+                    if latest_flow_record is None and flow_context:
+                        latest_flow_record = list(flow_context.values())[-1]
+                except Exception as flow_error:
+                    flow_summary = {
+                        "flowDataDays": 0,
+                        "flowScoreAvg": 50,
+                        "foreignNetLotsSum": 0,
+                        "trustNetLotsSum": 0,
+                        "dealerNetLotsSum": 0,
+                        "flowSignal": f"法人資料失敗：{flow_error}",
+                    }
+                    latest_flow_record = None
+
+            flow_score = float(flow_summary.get("flowScoreAvg", 50))
+            latest_foreign_lots = float((latest_flow_record or {}).get("foreignNetLots", 0))
+            latest_trust_lots = float((latest_flow_record or {}).get("trustNetLots", 0))
+            latest_total_lots = float((latest_flow_record or {}).get("totalNetLots", 0))
+
+            foreign_buy = latest_foreign_lots > 0
+            trust_buy = latest_trust_lots > 0
+            flow_positive = flow_score >= 60 or latest_total_lots > 0
+            flow_risk = flow_score <= 35
+
+            score = 0
+            score += screener_bool_score(above_ma20, 15)
+            score += screener_bool_score(above_ma60, 10)
+            score += screener_bool_score(ma20_above_ma60, 10)
+            score += screener_bool_score(near_ma20, 10)
+            score += screener_bool_score(breakout20, 18)
+            score += screener_bool_score(rsi_rebound, 12)
+            score += screener_bool_score(flow_positive, 15)
+            score += screener_bool_score(foreign_buy, 5)
+            score += screener_bool_score(trust_buy, 5)
+
+            if flow_risk:
+                score -= 20
+
+            score = max(0, min(100, int(round(score))))
+
+            tags = []
+
+            if above_ma20:
+                tags.append("站上 MA20")
+            if above_ma60:
+                tags.append("站上 MA60")
+            if ma20_above_ma60:
+                tags.append("月線強於季線")
+            if near_ma20:
+                tags.append("接近月線")
+            if breakout20:
+                tags.append("20 日突破")
+            if rsi_rebound:
+                tags.append("RSI 轉強")
+            if flow_positive:
+                tags.append("法人偏多")
+            if foreign_buy:
+                tags.append("外資買超")
+            if trust_buy:
+                tags.append("投信買超")
+            if flow_risk:
+                tags.append("法人風險")
+
+            signal = "觀察"
+
+            if score >= 80:
+                signal = "強勢候選"
+            elif score >= 65:
+                signal = "偏多候選"
+            elif score >= 50:
+                signal = "中性觀察"
+            elif flow_risk:
+                signal = "風險警示"
+
+            passed = True
+
+            if request.requireAboveMa20 and not above_ma20:
+                passed = False
+
+            if request.requireFlowPositive and not flow_positive:
+                passed = False
+
+            if request.requireBreakout and not breakout20:
+                passed = False
+
+            if request.requireRsiRebound and not rsi_rebound:
+                passed = False
+
+            if score < request.minScore:
+                passed = False
+
+            security_info = get_security_info(symbol)
+
+            candidate = {
+                "symbol": normalize_symbol_code(symbol),
+                "stockName": security_info.get("name", get_stock_name(symbol)),
+                "market": security_info.get("market", ""),
+                "securityType": security_info.get("type", ""),
+                "tickerUsed": ticker_used,
+                "lastDate": latest["date"],
+                "lastClose": latest_close,
+                "ma20": round(ma20, 2) if ma20 is not None else None,
+                "ma60": round(ma60, 2) if ma60 is not None else None,
+                "high20": round(high20, 2) if high20 is not None else None,
+                "rsi": round(rsi, 1) if rsi is not None else None,
+                "distanceToMa20Pct": screener_safe_pct(latest_close, ma20),
+                "distanceToMa60Pct": screener_safe_pct(latest_close, ma60),
+                "distanceToHigh20Pct": screener_safe_pct(latest_close, high20),
+                "aboveMa20": above_ma20,
+                "aboveMa60": above_ma60,
+                "ma20AboveMa60": ma20_above_ma60,
+                "nearMa20": near_ma20,
+                "breakout20": breakout20,
+                "rsiRebound": rsi_rebound,
+                "flowScoreAvg": flow_summary.get("flowScoreAvg", 50),
+                "flowSignal": flow_summary.get("flowSignal", "未啟用法人資料"),
+                "flowDataDays": flow_summary.get("flowDataDays", 0),
+                "foreignNetLotsSum": flow_summary.get("foreignNetLotsSum", 0),
+                "trustNetLotsSum": flow_summary.get("trustNetLotsSum", 0),
+                "dealerNetLotsSum": flow_summary.get("dealerNetLotsSum", 0),
+                "latestForeignNetLots": latest_foreign_lots,
+                "latestTrustNetLots": latest_trust_lots,
+                "latestTotalNetLots": latest_total_lots,
+                "score": score,
+                "signal": signal,
+                "tags": tags,
+                "passed": passed,
+            }
+
+            candidates.append(candidate)
+
+        except Exception as error:
+            errors.append(
+                {
+                    "symbol": symbol,
+                    "error": str(error),
+                }
+            )
+
+    candidates = sorted(
+        candidates,
+        key=lambda item: (item["passed"], item["score"], item["latestTotalNetLots"]),
+        reverse=True,
+    )
+
+    passed_candidates = [item for item in candidates if item["passed"]]
+    watch_candidates = [
+        item for item in candidates if not item["passed"] and item["score"] >= 45
+    ]
+    risk_candidates = [
+        item for item in candidates if "法人風險" in item.get("tags", []) or item["score"] < 45
+    ]
+
+    return {
+        "ok": True,
+        "requestedCount": len(symbols),
+        "count": len(candidates),
+        "passedCount": len(passed_candidates),
+        "candidates": candidates,
+        "passedCandidates": passed_candidates,
+        "watchCandidates": watch_candidates,
+        "riskCandidates": risk_candidates,
+        "errors": errors,
+        "settings": {
+            "startDate": start_date,
+            "endDate": end_date,
+            "useFlow": request.useFlow,
+            "minScore": request.minScore,
+            "requireAboveMa20": request.requireAboveMa20,
+            "requireFlowPositive": request.requireFlowPositive,
+            "requireBreakout": request.requireBreakout,
+            "requireRsiRebound": request.requireRsiRebound,
+        },
+    }
