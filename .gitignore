@@ -33,4 +33,4 @@ next-env.d.ts
 backend/.venv/
 __pycache__/
 *.pyc
-.pytest_cache/
+.pytest_cache/backend/data/institutional_flow/*.json
