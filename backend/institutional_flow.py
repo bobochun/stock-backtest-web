@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, asdict
 from datetime import datetime, date, timedelta
 from pathlib import Path
+import os
 from typing import Dict, Iterable, List, Optional, Tuple
 
 import json
@@ -11,7 +12,7 @@ import requests
 
 
 BASE_DIR = Path(__file__).resolve().parent
-DATA_DIR = BASE_DIR / "data"
+DATA_DIR = Path("/tmp/stock-backtest-web-data") if os.environ.get("VERCEL") else BASE_DIR / "data"
 FLOW_CACHE_DIR = DATA_DIR / "institutional_flow"
 
 FLOW_CACHE_DIR.mkdir(parents=True, exist_ok=True)

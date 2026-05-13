@@ -3,6 +3,7 @@ from pydantic import BaseModel
 from datetime import date, datetime, timedelta
 from io import StringIO
 from pathlib import Path
+import os
 
 import json
 import pandas as pd
@@ -15,10 +16,10 @@ FEE_RATE = 0.001425
 TAX_RATE = 0.003
 
 BASE_DIR = Path(__file__).resolve().parent
-DATA_DIR = BASE_DIR / "data"
+DATA_DIR = Path("/tmp/stock-backtest-web-data") if os.environ.get("VERCEL") else BASE_DIR / "data"
 SECURITY_MASTER_FILE = DATA_DIR / "security_master.json"
 
-DATA_DIR.mkdir(exist_ok=True)
+DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 STRATEGIES = [
     "MA20 / MA60 黃金交叉",
