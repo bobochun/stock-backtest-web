@@ -1,86 +1,20 @@
 "use client";
 
 import { useMemo, useState } from "react";
-
-type ResearchStatus = "watching" | "ready" | "entered" | "avoid";
-
-type ResearchItem = {
-  id: string;
-  symbol: string;
-  name: string;
-  status: ResearchStatus;
-  thesis: string;
-  notes: string;
-  tags: string[];
-  entry?: number;
-  stop?: number;
-  target?: number;
-  currentPrice?: number;
-  score: number;
-  updatedAt: string;
-  checklist: {
-    trend: boolean;
-    flow: boolean;
-    base: boolean;
-    risk: boolean;
-    catalyst: boolean;
-    valuation: boolean;
-  };
-};
-
-const STORAGE_KEY = "stock-research-desk-pro-v1";
-
-function uid() {
-  return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-}
-
-function todayText() {
-  return new Date().toISOString().slice(0, 10);
-}
+import { upsertResearchItem } from "../../lib/researchDeskStore";
 
 function toNumber(value: string) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 
-function makeItem({
-  symbol,
-  name,
-  entry,
-  stop,
-  target,
-  thesis,
-}: {
-  symbol: string;
-  name: string;
-  entry?: number;
-  stop?: number;
-  target?: number;
-  thesis: string;
-}): ResearchItem {
-  return {
-    id: uid(),
-    symbol,
-    name: name || symbol,
-    status: entry && stop ? "ready" : "watching",
-    thesis,
-    notes: "",
-    tags: ["quick-add"],
-    entry,
-    stop,
-    target,
-    currentPrice: undefined,
-    score: 50,
-    updatedAt: todayText(),
-    checklist: {
-      trend: false,
-      flow: false,
-      base: false,
-      risk: Boolean(entry && stop),
-      catalyst: false,
-      valuation: false,
-    },
-  };
+function cleanSymbol(value: string) {
+  return value
+    .trim()
+    .toUpperCase()
+    .replace(".TW", "")
+    .replace(".TWO", "")
+    .replace(/\s+/g, "");
 }
 
 export default function QuickResearchAdd() {
@@ -99,14 +33,10 @@ export default function QuickResearchAdd() {
     const targetValue = toNumber(target);
 
     const risk =
-      entryValue && stopValue
-        ? Math.abs(entryValue - stopValue)
-        : undefined;
+      entryValue && stopValue ? Math.abs(entryValue - stopValue) : undefined;
 
     const reward =
-      entryValue && targetValue
-        ? Math.abs(targetValue - entryValue)
-        : undefined;
+      entryValue && targetValue ? Math.abs(targetValue - entryValue) : undefined;
 
     const rr = risk && reward ? reward / risk : undefined;
 
@@ -119,60 +49,37 @@ export default function QuickResearchAdd() {
   }, [entry, stop, target]);
 
   function addToResearchDesk() {
-    const cleanSymbol = symbol.trim().toUpperCase();
+    const clean = cleanSymbol(symbol);
 
-    if (!cleanSymbol) {
+    if (!clean) {
       setMessage("請輸入股票代號。");
       return;
     }
 
-    const item = makeItem({
-      symbol: cleanSymbol,
-      name: name.trim() || cleanSymbol,
-      entry: preview.entryValue,
-      stop: preview.stopValue,
-      target: preview.targetValue,
-      thesis,
-    });
-
     try {
-      const raw = window.localStorage.getItem(STORAGE_KEY);
-      const parsed = raw
-        ? (JSON.parse(raw) as { items?: ResearchItem[]; accountSize?: number; riskPct?: number })
-        : {};
+      const result = upsertResearchItem({
+        symbol: clean,
+        name: name.trim() || clean,
+        thesis,
+        notes: "",
+        tags: ["quick-add"],
+        entry: preview.entryValue,
+        stop: preview.stopValue,
+        target: preview.targetValue,
+        checklist: {
+          risk: Boolean(preview.entryValue && preview.stopValue),
+        },
+      });
 
-      const items = parsed.items || [];
-      const exists = items.some((existing) => existing.symbol === cleanSymbol);
-
-      const nextItems = exists
-        ? items.map((existing) =>
-            existing.symbol === cleanSymbol
-              ? {
-                  ...existing,
-                  ...item,
-                  id: existing.id,
-                  notes: existing.notes,
-                  tags: Array.from(new Set([...(existing.tags || []), "quick-add"])),
-                }
-              : existing
-          )
-        : [item, ...items];
-
-      window.localStorage.setItem(
-        STORAGE_KEY,
-        JSON.stringify({
-          version: 1,
-          exportedAt: new Date().toISOString(),
-          accountSize: parsed.accountSize || 500000,
-          riskPct: parsed.riskPct || 1,
-          items: nextItems,
-        })
+      setMessage(
+        result.existed
+          ? `已更新 ${clean} 的 Research Desk 資料。`
+          : `已新增 ${clean} 到 Research Desk。`
       );
 
-      setMessage(exists ? "已更新 Research Desk 既有標的。" : "已加入 Research Desk。");
       setOpen(false);
     } catch {
-      setMessage("加入失敗：localStorage 寫入錯誤。");
+      setMessage("加入失敗：Research Desk 儲存錯誤。");
     }
   }
 
@@ -218,6 +125,7 @@ export default function QuickResearchAdd() {
               <Field label="進場價" value={entry} onChange={setEntry} type="number" />
               <Field label="停損價" value={stop} onChange={setStop} type="number" />
               <Field label="停利價" value={target} onChange={setTarget} type="number" />
+
               <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
                 <p className="text-xs font-bold text-slate-400">R/R 預估</p>
                 <p className="mt-2 text-2xl font-black text-cyan-200">
