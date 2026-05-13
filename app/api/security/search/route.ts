@@ -1,3 +1,5 @@
+
+const BACKEND_URL = process.env.API_BASE_URL || process.env.BACKEND_URL || "http://127.0.0.1:8000";
 export async function GET(request: Request) {
   try {
     const { searchParams } = new URL(request.url);
@@ -5,7 +7,7 @@ export async function GET(request: Request) {
     const limit = searchParams.get("limit") || "20";
 
     const response = await fetch(
-      `http://127.0.0.1:8000/security/search?q=${encodeURIComponent(
+      `${BACKEND_URL}/security/search?q=${encodeURIComponent(
         q
       )}&limit=${encodeURIComponent(limit)}`
     );
