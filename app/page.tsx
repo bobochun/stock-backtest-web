@@ -515,7 +515,7 @@ export default function Home() {
     annualReturn: 18.7,
     maxDrawdown: -13.2,
     winRate: 61.5,
-    trades: 48,
+    trades: [],
   });
 
   const [equityCurve, setEquityCurve] = useState<EquityPoint[]>(defaultCurve);
@@ -530,7 +530,7 @@ export default function Home() {
       annualReturn: 22.4,
       maxDrawdown: -12.8,
       winRate: 62.1,
-      trades: 42,
+      trades: [],
     },
   ]);
 

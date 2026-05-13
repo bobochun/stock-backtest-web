@@ -295,7 +295,7 @@ function summarizeSimulations({
 
   const finals = paths.map((path) => path.finalEquity);
   const returns = paths.map((path) => path.returnPct);
-  const drawdowns = paths.map((path) => path.maxDrawdownPct);
+  const drawdowns = paths.map((path) => path.maxDrawdownPct ?? 0);
   const streaks = paths.map((path) => path.lossStreakMax);
 
   const sortedByFinal = [...paths].sort((a, b) => a.finalEquity - b.finalEquity);
@@ -686,7 +686,7 @@ export default function ProRiskLab() {
                   </td>
                   {row.map((cell) => (
                     <td
-                      key={`${cell.winRatePct}-${cell.avgWinPct}`}
+                      key={`${cell.winRatePct ?? 0}-${cell.avgWinPct ?? 0}`}
                       className={`rounded-xl border p-3 text-center font-semibold ${getScoreClass(
                         cell.score
                       )}`}

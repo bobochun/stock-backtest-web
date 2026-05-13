@@ -424,7 +424,7 @@ export default function ReportLab() {
       `年化報酬：${formatPct(result.annualReturn)}`,
       `最大回撤：${formatPct(result.maxDrawdown)}`,
       `勝率：${formatPct(result.winRate)}`,
-      `交易次數：${result.trades}`,
+      `交易次數：${Array.isArray(result.trades) ? result.trades.length : result.trades ?? 0}`,
       `風險評級：${grade.label}（${grade.score}/100）`,
       `目前訊號：${result.currentSignal || "-"}`,
       result.flowEnabled

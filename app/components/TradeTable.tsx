@@ -109,7 +109,7 @@ export default function TradeTable({ tradeRecords }: TradeTableProps) {
                 <td className="px-4 py-4 text-slate-700">{trade.exitPrice}</td>
 
                 <td className="px-4 py-4 text-slate-700">
-                  {formatNumber(trade.shares)}
+                  {formatNumber(trade.shares ?? 0)}
                 </td>
 
                 <td

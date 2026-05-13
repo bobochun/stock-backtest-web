@@ -115,23 +115,23 @@ export default function StrategyComparison({
 
                 <td
                   className={
-                    item.annualReturn >= 0
+                    (item.annualReturn ?? 0) >= 0
                       ? "px-4 py-4 font-bold text-green-600"
                       : "px-4 py-4 font-bold text-red-600"
                   }
                 >
-                  {item.annualReturn}%
+                  {item.annualReturn ?? 0}%
                 </td>
 
                 <td className="px-4 py-4 font-bold text-red-600">
-                  {item.maxDrawdown}%
+                  {item.maxDrawdown ?? 0}%
                 </td>
 
                 <td className="px-4 py-4 text-slate-700">
-                  {item.winRate}%
+                  {item.winRate ?? 0}%
                 </td>
 
-                <td className="px-4 py-4 text-slate-700">{item.trades}</td>
+                <td className="px-4 py-4 text-slate-700">{Array.isArray(item.trades) ? item.trades.length : item.trades ?? 0}</td>
 
                 <td className="rounded-r-2xl px-4 py-4 font-medium text-blue-700">
                   {item.currentSignal || "-"}

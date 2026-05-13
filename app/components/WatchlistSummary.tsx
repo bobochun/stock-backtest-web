@@ -59,11 +59,11 @@ export default function WatchlistSummary({ results }: WatchlistSummaryProps) {
   }
 
   const topAnnualReturn = [...results]
-    .sort((a, b) => b.annualReturn - a.annualReturn)
+    .sort((a, b) => (b.annualReturn ?? 0) - (a.annualReturn ?? 0))
     .slice(0, 5);
 
   const smallestDrawdown = [...results]
-    .sort((a, b) => b.maxDrawdown - a.maxDrawdown)
+    .sort((a, b) => (b.maxDrawdown ?? 0) - (a.maxDrawdown ?? 0))
     .slice(0, 5);
 
   const breakoutCandidates = results
@@ -81,7 +81,7 @@ export default function WatchlistSummary({ results }: WatchlistSummaryProps) {
     .slice(0, 5);
 
   const topWinRate = [...results]
-    .sort((a, b) => b.winRate - a.winRate)
+    .sort((a, b) => (b.winRate ?? 0) - (a.winRate ?? 0))
     .slice(0, 5);
 
   return (

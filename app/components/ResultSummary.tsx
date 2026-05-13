@@ -97,7 +97,7 @@ export default function ResultSummary({ result }: ResultSummaryProps) {
           <div className="rounded-xl bg-white p-4">
             <p className="text-sm text-slate-500">交易次數</p>
             <p className="mt-1 text-xl font-bold text-slate-900">
-              {result.trades}
+              {Array.isArray(result.trades) ? result.trades.length : result.trades ?? 0}
             </p>
           </div>
         </div>

@@ -23,10 +23,10 @@ export default function RecentResults({ recentResults }: RecentResultsProps) {
 
               <div className="text-right">
                 <p className="font-bold text-slate-900">
-                  報酬 +{item.annualReturn}%
+                  報酬 +{item.annualReturn ?? 0}%
                 </p>
                 <p className="mt-1 text-sm text-slate-500">
-                  MDD {item.maxDrawdown}%｜勝率 {item.winRate}%
+                  MDD {item.maxDrawdown ?? 0}%｜勝率 {item.winRate ?? 0}%
                 </p>
               </div>
             </div>

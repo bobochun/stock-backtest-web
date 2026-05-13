@@ -121,7 +121,7 @@ export default function WatchlistScanner({
                   {item.winRate}%
                 </td>
 
-                <td className="px-4 py-4 text-slate-700">{item.trades}</td>
+                <td className="px-4 py-4 text-slate-700">{Array.isArray(item.trades) ? item.trades.length : item.trades ?? 0}</td>
 
                 <td className="px-4 py-4 text-slate-700">
                   {item.lastClose || "-"}

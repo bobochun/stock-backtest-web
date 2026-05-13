@@ -149,7 +149,7 @@ export default function ParameterOptimizer({
                   {item.profitFactor ?? "-"}
                 </td>
 
-                <td className="px-4 py-4 text-slate-700">{item.trades}</td>
+                <td className="px-4 py-4 text-slate-700">{Array.isArray(item.trades) ? item.trades.length : "-"}</td>
 
                 <td className="px-4 py-4 text-slate-700">
                   {item.fastMaWindow ?? "-"} / {item.slowMaWindow ?? "-"}

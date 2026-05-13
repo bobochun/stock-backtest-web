@@ -1,5 +1,5 @@
 export type EquityPoint = {
-  date: string;
+  date?: string;
   value?: number;
   equity?: number;
   close?: number;
@@ -192,4 +192,14 @@ export type OptimizationResult = {
   trade_count?: number;
 
   [key: string]: any;
+};
+export type SecurityOption = {
+  symbol: string;
+  name: string;
+  market?: string;
+  exchange?: string;
+  type?: string;
+  label?: string;
+  value?: string;
+  industry?: string;
 };
