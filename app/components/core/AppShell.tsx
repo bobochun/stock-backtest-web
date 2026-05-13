@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import { ReactNode, useMemo, useState } from "react";
 import CommandPalette, { CommandItem } from "./CommandPalette";
 import QuickResearchAdd from "./QuickResearchAdd";
+import StockQuickJump from "./StockQuickJump";
 import WorkflowBar from "./WorkflowBar";
 
 const navItems: CommandItem[] = [
@@ -63,6 +64,13 @@ const navItems: CommandItem[] = [
     group: "策略",
     desc: "Vercel 友善快速參數候選",
     badge: "Lite",
+  },
+  {
+    title: "Stock Cockpit",
+    href: "/stock/2330",
+    group: "核心",
+    desc: "單股研究駕駛艙：回測、法人、交易計畫",
+    badge: "Stock",
   },
   {
     title: "Pro Lab",
@@ -138,7 +146,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
           </Link>
 
           <nav className="hidden items-center gap-1 xl:flex">
-            {navItems.slice(0, 7).map((item) => {
+            {navItems.slice(0, 8).map((item) => {
               const active = isActivePath(pathname, item.href);
 
               return (
@@ -169,7 +177,13 @@ export default function AppShell({ children }: { children: ReactNode }) {
               搜尋工具
             </button>
 
-            <QuickResearchAdd />
+            <div className="hidden sm:block">
+              <StockQuickJump />
+            </div>
+
+            <div className="hidden md:block">
+              <QuickResearchAdd />
+            </div>
 
             <button
               onClick={() => setMenuOpen((value) => !value)}
@@ -230,6 +244,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
                             <p className="font-black text-white">
                               {item.title}
                             </p>
+
                             <span className="rounded-full bg-white/10 px-2 py-1 text-[10px] font-black text-cyan-200">
                               {item.badge}
                             </span>
@@ -244,6 +259,32 @@ export default function AppShell({ children }: { children: ReactNode }) {
                   </div>
                 </section>
               ))}
+
+              <section className="md:col-span-2 lg:col-span-4">
+                <p className="mb-2 text-xs font-black uppercase tracking-[0.25em] text-cyan-300">
+                  快速操作
+                </p>
+
+                <div className="flex flex-wrap gap-2">
+                  <div className="sm:hidden">
+                    <StockQuickJump />
+                  </div>
+
+                  <div className="md:hidden">
+                    <QuickResearchAdd />
+                  </div>
+
+                  <button
+                    onClick={() => {
+                      setPaletteOpen(true);
+                      setMenuOpen(false);
+                    }}
+                    className="rounded-2xl border border-white/10 bg-white/10 px-4 py-2 text-sm font-bold text-white transition hover:bg-white/15"
+                  >
+                    搜尋工具
+                  </button>
+                </div>
+              </section>
             </div>
           </div>
         )}
@@ -266,6 +307,10 @@ export default function AppShell({ children }: { children: ReactNode }) {
             <span>・</span>
             <Link href="/research-desk" className="hover:text-white">
               Research Desk
+            </Link>
+            <span>・</span>
+            <Link href="/stock/2330" className="hover:text-white">
+              Stock Cockpit
             </Link>
             <span>・</span>
             <Link href="/quick-plan" className="hover:text-white">
