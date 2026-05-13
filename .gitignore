@@ -35,3 +35,5 @@ __pycache__/
 *.pyc
 .pytest_cache/backend/data/institutional_flow/*.json
 backend/data/institutional_flow/*.json
+.env.local
+backend/data/institutional_flow/*.json
